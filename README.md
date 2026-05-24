@@ -1,18 +1,31 @@
 # VoiceMorpher — ESP32-S3 I2S Recording + Effects (PlatformIO)
-
+```````````````````````````````````````````````00`0000``0`000`0``000000000000000000```````22```````````````````0`00`````````````````````````````````````0``````````````````````````````````````````````````````0```````````````````````````````````````````````````````````````````````````````````````````54+86666666666666666666999999999999999999999``````````````````````````````````````````````````````````````````````````````````21
 This small PlatformIO project demonstrates recording from an INMP441 I2S microphone and playback to a MAX98357A I2S amplifier on an ESP32-S3. It implements simple effects: pitch via resampling, reverse, echo, and ring modulation.
 
-Wiring (example pins shown in code)
-- INMP441 SCK -> ESP32 GPIO4 (shared BCLK)
-- INMP441 WS  -> ESP32 GPIO5 (shared LRCLK/WS)
-- INMP441 SD  -> ESP32 GPIO6 (data out -> input)
-- INMP441 L/R -> GND (left channel)
-- VDD / GND   -> 3.3V / GND
+Wiring (pins shown in current code)
 
-- MAX98357A BCLK -> GPIO4 (shared)
-- MAX98357A LRC  -> GPIO5 (shared)
-- MAX98357A DIN  -> GPIO7 (data in from ESP32)
-- VIN / GND      -> 5V / GND (speaker power)
+INMP441 microphone (I2S RX):
+- SCK  -> ESP32 GPIO4
+- WS   -> ESP32 GPIO5
+- SD   -> ESP32 GPIO6
+- L/R  -> GND (left channel)
+- VDD  -> 3.3V
+- GND  -> GND
+
+MAX98357A amplifier (I2S TX):
+- BCLK -> ESP32 GPIO47
+- LRCLK/LRC -> ESP32 GPIO45
+- DIN/SD -> ESP32 GPIO38
+- AMP_SD -> ESP32 GPIO21
+- VIN -> 5V
+- GND -> GND
+- GAIN -> leave per module default or wire according to your board documentation
+
+Optional display / joystick wiring (if using UI code):
+- OLED SDA -> ESP32 GPIO18
+- OLED SCL -> ESP32 GPIO16
+- Joystick Y -> ESP32 GPIO20 (ADC)
+- Joystick button -> ESP32 GPIO35 (digital input)
 
 Build & upload
 
