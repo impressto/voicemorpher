@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <LittleFS.h>
 #include "driver/i2s.h"
 #include "config.h"
 
@@ -28,12 +29,12 @@
 #define JOY_HIGH_THRESHOLD 2800
 
 // Audio parameters
-const int SAMPLE_RATE = 16000;
+const int SAMPLE_RATE = 22050;
 const int BITS_PER_SAMPLE = 16;
 const int CHANNELS = 1; // mono
 
 // Recording buffer (seconds * sample_rate)
-const int RECORD_SECONDS = 10;
+const int RECORD_SECONDS = 5;
 const int SAMPLE_COUNT = SAMPLE_RATE * RECORD_SECONDS;
 static int16_t *record_buffer = nullptr;
 
@@ -272,12 +273,12 @@ void initI2S()
   i2s_config_t i2s_rx_config = {};
   i2s_rx_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   i2s_rx_config.sample_rate = SAMPLE_RATE;
-  i2s_rx_config.bits_per_sample = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_32BIT;
+  i2s_rx_config.bits_per_sample = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_16BIT;
   i2s_rx_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
-  i2s_rx_config.communication_format = I2S_COMM_FORMAT_STAND_MSB;
+  i2s_rx_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   i2s_rx_config.dma_buf_count = 8;
-  i2s_rx_config.dma_buf_len = 1024;
-  i2s_rx_config.use_apll = true;
+  i2s_rx_config.dma_buf_len = 256;
+  i2s_rx_config.use_apll = false;
 
   // TX config (DAC / amplifier)
   i2s_config_t i2s_tx_config = {};
@@ -285,10 +286,10 @@ void initI2S()
   i2s_tx_config.sample_rate = SAMPLE_RATE;
   i2s_tx_config.bits_per_sample = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_16BIT;
   i2s_tx_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT; // mono output for MAX98357A
-  i2s_tx_config.communication_format = I2S_COMM_FORMAT_STAND_MSB;
+  i2s_tx_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   i2s_tx_config.dma_buf_count = 8;
-  i2s_tx_config.dma_buf_len = 1024;
-  i2s_tx_config.use_apll = true;
+  i2s_tx_config.dma_buf_len = 256;
+  i2s_tx_config.use_apll = false;
 
   // Install drivers
   esp_err_t ret_rx = i2s_driver_install(I2S_RX_PORT, &i2s_rx_config, 0, NULL);
@@ -347,6 +348,83 @@ static void stopTxAndFlush()
   i2s_stop(I2S_TX_PORT);
   i2s_zero_dma_buffer(I2S_TX_PORT);
   i2s_start(I2S_TX_PORT);
+}
+
+static void playStartupWav()
+{
+  if (!LittleFS.begin(true))
+  {
+    Serial.println("LittleFS mount failed — skipping startup sound");
+    return;
+  }
+
+  File f = LittleFS.open("/peppa_startup.wav", "r");
+  if (!f)
+  {
+    Serial.println("peppa_startup.wav not found");
+    return;
+  }
+
+  // Parse RIFF/WAV chunks to find fmt and data
+  uint8_t riff[12];
+  if (f.read(riff, 12) != 12 || riff[0] != 'R' || riff[1] != 'I')
+  {
+    Serial.println("Not a valid WAV file");
+    f.close(); return;
+  }
+
+  uint32_t sampleRate = SAMPLE_RATE;
+  uint16_t bitsPerSample = 16;
+  uint16_t channels = 1;
+  bool foundData = false;
+
+  uint8_t chunkHdr[8];
+  while (f.read(chunkHdr, 8) == 8)
+  {
+    uint32_t sz = (uint32_t)chunkHdr[4] | ((uint32_t)chunkHdr[5] << 8) |
+                  ((uint32_t)chunkHdr[6] << 16) | ((uint32_t)chunkHdr[7] << 24);
+    if (chunkHdr[0]=='f' && chunkHdr[1]=='m' && chunkHdr[2]=='t')
+    {
+      uint8_t fmt[16];
+      f.read(fmt, 16);
+      channels      = (uint16_t)fmt[2]  | ((uint16_t)fmt[3]  << 8);
+      sampleRate    = (uint32_t)fmt[4]  | ((uint32_t)fmt[5]  << 8) |
+                      ((uint32_t)fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
+      bitsPerSample = (uint16_t)fmt[14] | ((uint16_t)fmt[15] << 8);
+      if (sz > 16) f.seek(sz - 16, SeekCur);
+    }
+    else if (chunkHdr[0]=='d' && chunkHdr[1]=='a' && chunkHdr[2]=='t' && chunkHdr[3]=='a')
+    {
+      foundData = true;
+      break;
+    }
+    else
+    {
+      f.seek(sz, SeekCur);
+    }
+  }
+
+  if (!foundData)
+  {
+    Serial.println("WAV: no data chunk found");
+    f.close(); return;
+  }
+
+  Serial.printf("Startup WAV: %lu Hz, %d ch, %d bit (playing at %d Hz)\n",
+                (unsigned long)sampleRate, channels, bitsPerSample, SAMPLE_RATE);
+  drawStatus("Audio test", "peppa_startup.wav");
+
+  uint8_t buf[512];
+  size_t bytesRead;
+  while ((bytesRead = f.read(buf, sizeof(buf))) > 0)
+  {
+    size_t bytesWritten = 0;
+    i2s_write(I2S_TX_PORT, buf, bytesRead, &bytesWritten, portMAX_DELAY);
+  }
+
+  f.close();
+  stopTxAndFlush();
+  Serial.println("Startup WAV done.");
 }
 
 static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
@@ -639,6 +717,7 @@ void setup()
   drawMenu();
 
   initI2S();
+  playStartupWav();
 
   Serial.println("Ready. Commands:\n r = record  p = play  v = passthrough\n1 = play reverse 2 = pitch up 3 = pitch down 4 = echo 5 = ring mod\n");
 }

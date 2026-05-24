@@ -3,7 +3,7 @@
 // Default playback volume multiplier for MAX98357A output.
 // Increase this value to make playback louder, but avoid values that clip badly.
 #ifndef DEFAULT_PLAYBACK_GAIN
-#define DEFAULT_PLAYBACK_GAIN 8.0f
+#define DEFAULT_PLAYBACK_GAIN 1.0f
 #endif
 
 // Enable a light post-recording smoothing filter to reduce microphone crackle.
