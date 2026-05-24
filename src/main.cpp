@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
-#include <LittleFS.h>
 #include "driver/i2s.h"
 #include "config.h"
 
@@ -29,13 +28,13 @@
 #define JOY_HIGH_THRESHOLD 2800
 
 // Audio parameters
-const int SAMPLE_RATE = 22050;
+const int SAMPLE_RATE = 11025;
 const int BITS_PER_SAMPLE = 16;
 const int CHANNELS = 1; // mono
 
-// Recording buffer (seconds * sample_rate)
-const int RECORD_SECONDS = 5;
-const int SAMPLE_COUNT = SAMPLE_RATE * RECORD_SECONDS;
+// Recording buffer: 10s at 11025 Hz = 220500 bytes (same RAM as 5s at 22050 Hz)
+static int active_sample_count = SAMPLE_RATE * 5;
+static int g_max_record_secs = 10;
 static int16_t *record_buffer = nullptr;
 
 // Playback volume config
@@ -54,6 +53,7 @@ enum MenuItem
   MENU_PITCH_DOWN,
   MENU_ECHO,
   MENU_RINGMOD,
+  MENU_STUTTER,
   MENU_COUNT
 };
 
@@ -65,7 +65,8 @@ static const char *menuLabels[MENU_COUNT] = {
   "Pitch up",
   "Pitch down",
   "Echo",
-  "Ring mod"
+  "Ring mod",
+  "Stutter"
 };
 
 int currentMenu = 0;
@@ -89,6 +90,7 @@ void playReverse();
 void playResample(float speed);
 void playEcho(float delaySec, float decay);
 void playRingMod(float freq);
+void playStutter(float chunkSec, int repeats);
 
 static int readJoystickAxis(int pin)
 {
@@ -196,16 +198,136 @@ void drawStatus(const char *line1, const char *line2)
   u8g2.sendBuffer();
 }
 
+// Shows a sub-menu to select recording duration (1 to g_max_record_secs seconds).
+// Joystick X adjusts in 1-second steps; button confirms.
+static int showDurationSubMenu(int currentSecs)
+{
+  int secs = currentSecs < 1 ? 1 : (currentSecs > g_max_record_secs ? g_max_record_secs : currentSecs);
+  unsigned long lastMoveMs = 0;
+
+  while (true)
+  {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(2, 10, "Record Duration");
+
+    const int BX = 2, BY = 16, BW = 124, BH = 10;
+    u8g2.drawFrame(BX, BY, BW, BH);
+    int filled = g_max_record_secs > 1
+                   ? (int)((float)(secs - 1) / (g_max_record_secs - 1) * (BW - 2))
+                   : BW - 2;
+    if (filled > 0)
+      u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
+
+    char valBuf[32];
+    snprintf(valBuf, sizeof(valBuf), "Duration: %ds", secs);
+    u8g2.drawStr(2, 38, valBuf);
+    u8g2.drawStr(2, 50, "< X: adjust >");
+    u8g2.drawStr(2, 62, "Btn: record");
+    u8g2.sendBuffer();
+
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if (x != 0 && now - lastMoveMs > 200)
+    {
+      secs += x;
+      if (secs < 1) secs = 1;
+      if (secs > g_max_record_secs) secs = g_max_record_secs;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return secs;
+    }
+
+    delay(20);
+  }
+}
+
+// Persistent effect levels (0.0–1.0) remembered between plays
+static float s_pitchUpLevel   = 0.5f;
+static float s_pitchDownLevel = 0.5f;
+static float s_echoLevel      = 0.5f;
+static float s_ringmodLevel   = 0.5f;
+static float s_stutterLevel   = 0.5f;
+
+// Shows a full-screen sub-menu for adjusting a single effect parameter.
+// Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
+// current is in [0,1]; minVal/maxVal are the display range with the given unit string.
+static float showLevelSubMenu(const char *title, const char *paramLabel,
+                               float current, float minVal, float maxVal, const char *unit)
+{
+  float level = current;
+  unsigned long lastMoveMs = 0;
+
+  while (true)
+  {
+    float actualVal = minVal + level * (maxVal - minVal);
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(2, 10, title);
+
+    // Filled progress bar
+    const int BX = 2, BY = 16, BW = 124, BH = 10;
+    u8g2.drawFrame(BX, BY, BW, BH);
+    int filled = (int)(level * (BW - 2));
+    if (filled > 0)
+      u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
+
+    char valBuf[32];
+    if (unit[0] == 'x')
+      snprintf(valBuf, sizeof(valBuf), "%s: %.2f%s", paramLabel, actualVal, unit);
+    else
+      snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
+    u8g2.drawStr(2, 38, valBuf);
+    u8g2.drawStr(2, 50, "< X: adjust >");
+    u8g2.drawStr(2, 62, "Btn: play");
+    u8g2.sendBuffer();
+
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if (x != 0 && now - lastMoveMs > 150)
+    {
+      level += x * 0.05f;
+      if (level < 0.0f) level = 0.0f;
+      if (level > 1.0f) level = 1.0f;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return level;
+    }
+
+    delay(20);
+  }
+}
+
 void runMenuAction(int item)
 {
+  // Debounce: release twhen we select an effect can we show a but menu to se the effect level. We can use the joystick x pin to set the levelshe button press that opened this action
+  while (isJoystickButtonPressed()) delay(10);
+
   switch (item)
   {
     case MENU_RECORD:
-      drawStatus("Recording...", "Please wait");
+    {
+      int durSecs = showDurationSubMenu(active_sample_count / SAMPLE_RATE);
+      active_sample_count = durSecs * SAMPLE_RATE;
+      char durStr[32];
+      snprintf(durStr, sizeof(durStr), "%ds recording...", durSecs);
+      drawStatus("Recording...", durStr);
       recordToBuffer();
       drawStatus("Recording done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
+    }
     case MENU_PLAY:
       drawStatus("Playing raw...", nullptr);
       playBufferSimple();
@@ -225,25 +347,37 @@ void runMenuAction(int item)
       while (!isJoystickButtonPressed()) delay(50);
       break;
     case MENU_PITCH_UP:
-      drawStatus("Pitch up...", nullptr);
-      playResample(1.6f);
+    {
+      s_pitchUpLevel = showLevelSubMenu("Pitch Up", "Speed", s_pitchUpLevel, 1.1f, 2.5f, "x");
+      float speed = 1.1f + s_pitchUpLevel * 1.4f;
+      char info[32];
+      snprintf(info, sizeof(info), "Speed: %.2fx", speed);
+      drawStatus("Pitch up...", info);
+      playResample(speed);
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
+    }
     case MENU_PITCH_DOWN:
-      drawStatus("Pitch down...", nullptr);
-      playResample(0.6f);
+    {
+      s_pitchDownLevel = showLevelSubMenu("Pitch Down", "Speed", s_pitchDownLevel, 0.3f, 0.9f, "x");
+      float speed = 0.3f + s_pitchDownLevel * 0.6f;
+      char info[32];
+      snprintf(info, sizeof(info), "Speed: %.2fx", speed);
+      drawStatus("Pitch down...", info);
+      playResample(speed);
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
+    }
     case MENU_ECHO:
     {
-      float intensity = readJoystickXIntensity();
-      float delaySec = 0.1f + intensity * 0.4f;
-      float decay = 0.2f + intensity * 0.5f;
-      char info[64];
-      snprintf(info, sizeof(info), "Echo %.0fms decay %.2f", delaySec * 1000.0f, decay);
-      drawStatus("Echo effect...", info);
+      s_echoLevel = showLevelSubMenu("Echo", "Delay", s_echoLevel, 100.0f, 500.0f, "ms");
+      float delaySec = (100.0f + s_echoLevel * 400.0f) / 1000.0f;
+      float decay = 0.2f + s_echoLevel * 0.5f;
+      char info[32];
+      snprintf(info, sizeof(info), "%.0fms dec %.2f", delaySec * 1000.0f, decay);
+      drawStatus("Echo...", info);
       playEcho(delaySec, decay);
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
@@ -251,12 +385,27 @@ void runMenuAction(int item)
     }
     case MENU_RINGMOD:
     {
-      float intensity = readJoystickXIntensity();
-      float freq = 10.0f + intensity * 80.0f;
-      char info[64];
-      snprintf(info, sizeof(info), "Ring mod %.0fHz", freq);
-      drawStatus("Ring modulation...", info);
+      s_ringmodLevel = showLevelSubMenu("Ring Mod", "Freq", s_ringmodLevel, 10.0f, 90.0f, "Hz");
+      float freq = 10.0f + s_ringmodLevel * 80.0f;
+      char info[32];
+      snprintf(info, sizeof(info), "Freq: %.0fHz", freq);
+      drawStatus("Ring mod...", info);
       playRingMod(freq);
+      drawStatus("Done.", "Press button");
+      while (!isJoystickButtonPressed()) delay(50);
+      break;
+    }
+    case MENU_STUTTER:
+    {
+      // level 0 = subtle (long 200ms chunks, 2 repeats)
+      // level 1 = heavy  (short 30ms chunks, 6 repeats)
+      s_stutterLevel = showLevelSubMenu("Stutter", "Intensity", s_stutterLevel, 0.0f, 100.0f, "%");
+      float chunkSec = (200.0f - s_stutterLevel * 0.01f * 170.0f) / 1000.0f;
+      int repeats = 2 + (int)(s_stutterLevel * 0.04f);
+      char info[32];
+      snprintf(info, sizeof(info), "%.0fms x%d", chunkSec * 1000.0f, repeats);
+      drawStatus("Stutter...", info);
+      playStutter(chunkSec, repeats);
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
@@ -350,82 +499,6 @@ static void stopTxAndFlush()
   i2s_start(I2S_TX_PORT);
 }
 
-static void playStartupWav()
-{
-  if (!LittleFS.begin(true))
-  {
-    Serial.println("LittleFS mount failed — skipping startup sound");
-    return;
-  }
-
-  File f = LittleFS.open("/peppa_startup.wav", "r");
-  if (!f)
-  {
-    Serial.println("peppa_startup.wav not found");
-    return;
-  }
-
-  // Parse RIFF/WAV chunks to find fmt and data
-  uint8_t riff[12];
-  if (f.read(riff, 12) != 12 || riff[0] != 'R' || riff[1] != 'I')
-  {
-    Serial.println("Not a valid WAV file");
-    f.close(); return;
-  }
-
-  uint32_t sampleRate = SAMPLE_RATE;
-  uint16_t bitsPerSample = 16;
-  uint16_t channels = 1;
-  bool foundData = false;
-
-  uint8_t chunkHdr[8];
-  while (f.read(chunkHdr, 8) == 8)
-  {
-    uint32_t sz = (uint32_t)chunkHdr[4] | ((uint32_t)chunkHdr[5] << 8) |
-                  ((uint32_t)chunkHdr[6] << 16) | ((uint32_t)chunkHdr[7] << 24);
-    if (chunkHdr[0]=='f' && chunkHdr[1]=='m' && chunkHdr[2]=='t')
-    {
-      uint8_t fmt[16];
-      f.read(fmt, 16);
-      channels      = (uint16_t)fmt[2]  | ((uint16_t)fmt[3]  << 8);
-      sampleRate    = (uint32_t)fmt[4]  | ((uint32_t)fmt[5]  << 8) |
-                      ((uint32_t)fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
-      bitsPerSample = (uint16_t)fmt[14] | ((uint16_t)fmt[15] << 8);
-      if (sz > 16) f.seek(sz - 16, SeekCur);
-    }
-    else if (chunkHdr[0]=='d' && chunkHdr[1]=='a' && chunkHdr[2]=='t' && chunkHdr[3]=='a')
-    {
-      foundData = true;
-      break;
-    }
-    else
-    {
-      f.seek(sz, SeekCur);
-    }
-  }
-
-  if (!foundData)
-  {
-    Serial.println("WAV: no data chunk found");
-    f.close(); return;
-  }
-
-  Serial.printf("Startup WAV: %lu Hz, %d ch, %d bit (playing at %d Hz)\n",
-                (unsigned long)sampleRate, channels, bitsPerSample, SAMPLE_RATE);
-  drawStatus("Audio test", "peppa_startup.wav");
-
-  uint8_t buf[512];
-  size_t bytesRead;
-  while ((bytesRead = f.read(buf, sizeof(buf))) > 0)
-  {
-    size_t bytesWritten = 0;
-    i2s_write(I2S_TX_PORT, buf, bytesRead, &bytesWritten, portMAX_DELAY);
-  }
-
-  f.close();
-  stopTxAndFlush();
-  Serial.println("Startup WAV done.");
-}
 
 static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
 {
@@ -464,7 +537,7 @@ void cleanRecording()
 #if ENABLE_AUDIO_CLEANING
   // Simple smoothing filter for recorded data to reduce crackle.
   int16_t prev = record_buffer[0];
-  for (int i = 1; i < SAMPLE_COUNT - 1; ++i)
+  for (int i = 1; i < active_sample_count - 1; ++i)
   {
     int32_t next = record_buffer[i + 1];
     int32_t cur = record_buffer[i];
@@ -483,7 +556,7 @@ void normalizeRecording(float targetPeak = 0.95f)
 {
   int32_t maxSample = 0;
   int32_t minSample = 0;
-  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  for (int i = 0; i < active_sample_count; ++i)
   {
     int32_t s = record_buffer[i];
     if (s > maxSample) maxSample = s;
@@ -508,7 +581,7 @@ void normalizeRecording(float targetPeak = 0.95f)
   }
   if (scale <= 1.0f) return;
 
-  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  for (int i = 0; i < active_sample_count; ++i)
   {
     int32_t scaled = int32_t(record_buffer[i] * scale);
     if (scaled > INT16_MAX) scaled = INT16_MAX;
@@ -522,11 +595,11 @@ void recordToBuffer()
   const size_t TEMP_SAMPLES = 256;
   int16_t temp[TEMP_SAMPLES]; // 16-bit to match I2S_BITS_PER_SAMPLE_16BIT
   size_t sample_offset = 0;
-  Serial.printf("Recording %d seconds (%d samples)...\n", RECORD_SECONDS, SAMPLE_COUNT);
+  Serial.printf("Recording %d seconds (%d samples)...\n", active_sample_count / SAMPLE_RATE, active_sample_count);
 
-  while (sample_offset < SAMPLE_COUNT)
+  while (sample_offset < active_sample_count)
   {
-    size_t samples_to_read = min(TEMP_SAMPLES, (size_t)(SAMPLE_COUNT - sample_offset));
+    size_t samples_to_read = min(TEMP_SAMPLES, (size_t)(active_sample_count - sample_offset));
     size_t bytes_to_read = samples_to_read * sizeof(int16_t);
     size_t bytes_read = 0;
 
@@ -535,7 +608,7 @@ void recordToBuffer()
     if (read_samples == 0)
       continue;
 
-    for (size_t i = 0; i < read_samples && sample_offset < SAMPLE_COUNT; ++i)
+    for (size_t i = 0; i < read_samples && sample_offset < active_sample_count; ++i)
     {
       record_buffer[sample_offset++] = temp[i];
     }
@@ -554,7 +627,7 @@ void playBufferSimple()
   // Check if buffer has any non-zero samples
   int32_t sum = 0;
   int nonzero_count = 0;
-  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  for (int i = 0; i < active_sample_count; ++i)
   {
     if (record_buffer[i] != 0) nonzero_count++;
     sum += abs(record_buffer[i]);
@@ -566,12 +639,12 @@ void playBufferSimple()
     return;
   }
   
-  int avg_magnitude = (sum > 0) ? sum / SAMPLE_COUNT : 0;
+  int avg_magnitude = (sum > 0) ? sum / active_sample_count : 0;
   Serial.printf("Playing buffer: %d non-zero samples, avg magnitude: %d\n", nonzero_count, avg_magnitude);
   
-  writeSamplesWithGain(record_buffer, SAMPLE_COUNT);
+  writeSamplesWithGain(record_buffer, active_sample_count);
   stopTxAndFlush();
-  Serial.printf("Playback complete: %u bytes written\n", (unsigned int)(SAMPLE_COUNT * sizeof(int16_t)));
+  Serial.printf("Playback complete: %u bytes written\n", (unsigned int)(active_sample_count * sizeof(int16_t)));
 }
 
 void playReverse()
@@ -579,7 +652,7 @@ void playReverse()
   // send samples in reverse order
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
-  int idx = SAMPLE_COUNT - 1;
+  int idx = active_sample_count - 1;
 
   while (idx >= 0)
   {
@@ -603,7 +676,7 @@ void playResample(float speed)
   int chunkIndex = 0;
   float idx = 0.0f;
 
-  while ((int)idx < SAMPLE_COUNT)
+  while ((int)idx < active_sample_count)
   {
     int read_idx = (int)idx;
     chunk[chunkIndex++] = applyPlaybackGain(record_buffer[read_idx]);
@@ -631,7 +704,7 @@ void playEcho(float delaySec, float decay)
   int16_t chunk[CHUNK_SAMPLES];
   int chunkIndex = 0;
 
-  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  for (int i = 0; i < active_sample_count; ++i)
   {
     int32_t out = record_buffer[i];
     if (i - delaySamples >= 0)
@@ -664,7 +737,7 @@ void playRingMod(float freq)
   int16_t chunk[CHUNK_SAMPLES];
   int chunkIndex = 0;
 
-  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  for (int i = 0; i < active_sample_count; ++i)
   {
     float t = (float)i / SAMPLE_RATE;
     float mod = sinf(2.0f * 3.14159265f * freq * t);
@@ -685,6 +758,39 @@ void playRingMod(float freq)
   {
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+  }
+  stopTxAndFlush();
+}
+
+void playStutter(float chunkSec, int repeats)
+{
+  int chunkSamples = (int)(chunkSec * SAMPLE_RATE);
+  if (chunkSamples < 1) chunkSamples = 1;
+
+  const size_t WRITE_SIZE = 256;
+  int16_t buf[WRITE_SIZE];
+
+  for (int pos = 0; pos < active_sample_count; pos += chunkSamples)
+  {
+    int chunkEnd = pos + chunkSamples;
+    if (chunkEnd > active_sample_count) chunkEnd = active_sample_count;
+
+    for (int rep = 0; rep < repeats; ++rep)
+    {
+      int writePos = pos;
+      while (writePos < chunkEnd)
+      {
+        int count = chunkEnd - writePos;
+        if (count > (int)WRITE_SIZE) count = (int)WRITE_SIZE;
+        for (int i = 0; i < count; ++i)
+          buf[i] = applyPlaybackGain(record_buffer[writePos + i]);
+        size_t bytesWritten = 0;
+        i2s_write(I2S_TX_PORT, buf, count * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        writePos += count;
+      }
+    }
+
+    if (isJoystickButtonPressed()) break;
   }
   stopTxAndFlush();
 }
@@ -715,13 +821,13 @@ void setup()
   delay(1000);
   Serial.println("VoiceMorpher ESP32-S3 - initializing...");
 
-  record_buffer = (int16_t *)malloc(SAMPLE_COUNT * sizeof(int16_t));
+  record_buffer = (int16_t *)malloc(SAMPLE_RATE * 10 * sizeof(int16_t));
   if (!record_buffer)
   {
-    Serial.println("Failed to allocate record buffer. Reduce RECORD_SECONDS or enable PSRAM.");
-    while (1)
-      delay(1000);
+    Serial.println("FATAL: Failed to allocate record buffer");
+    while (1) delay(1000);
   }
+  Serial.println("✓ Record buffer: 10s @ 11025 Hz");
 
   pinMode(AMP_SD, OUTPUT);
   digitalWrite(AMP_SD, HIGH);
@@ -734,7 +840,6 @@ void setup()
   drawMenu();
 
   initI2S();
-  playStartupWav();
 
   Serial.println("Ready. Commands:\n r = record  p = play  v = passthrough\n1 = play reverse 2 = pitch up 3 = pitch down 4 = echo 5 = ring mod\n");
 }
