@@ -21,6 +21,7 @@
 #define DISPLAY_SCL 16
 
 // Joystick pins
+#define JOY_X_PIN 17
 #define JOY_Y_PIN 20
 #define JOY_BTN_PIN 35
 #define JOY_LOW_THRESHOLD 1200
@@ -96,6 +97,15 @@ static int readJoystickAxis(int pin)
   return 0;
 }
 
+static float readJoystickXIntensity()
+{
+  int value = analogRead(JOY_X_PIN);
+  const int maxValue = 4095;
+  if (value < 0) value = 0;
+  if (value > maxValue) value = maxValue;
+  return value / (float)maxValue;
+}
+
 static bool isJoystickButtonPressed()
 {
   return digitalRead(JOY_BTN_PIN) == LOW;
@@ -137,22 +147,40 @@ void drawMenu()
 {
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(0, 12, "VoiceMorpher Menu");
-  for (int i = 0; i < MENU_COUNT; ++i)
+
+  const int visibleCount = 4;
+  int startIndex = currentMenu - visibleCount / 2;
+  if (startIndex < 0) startIndex = 0;
+  if (startIndex > MENU_COUNT - visibleCount)
+    startIndex = MENU_COUNT - visibleCount;
+
+  for (int i = 0; i < visibleCount; ++i)
   {
-    int y = 24 + i * 8;
-    if (i == currentMenu)
+    int itemIndex = startIndex + i;
+    int y = 14 + i * 12;
+
+    if (itemIndex == currentMenu)
     {
-      u8g2.drawBox(0, y - 8, 128, 10);
+      u8g2.drawBox(0, y - 10, 128, 12);
       u8g2.setDrawColor(0);
-      u8g2.drawStr(2, y, menuLabels[i]);
+      u8g2.drawStr(2, y, menuLabels[itemIndex]);
       u8g2.setDrawColor(1);
     }
     else
     {
-      u8g2.drawStr(2, y, menuLabels[i]);
+      u8g2.drawStr(2, y, menuLabels[itemIndex]);
     }
   }
+
+  if (startIndex > 0)
+  {
+    u8g2.drawStr(110, 10, "^");
+  }
+  if (startIndex + visibleCount < MENU_COUNT)
+  {
+    u8g2.drawStr(110, 58, "v");
+  }
+
   u8g2.drawStr(0, 62, "Press button to select");
   u8g2.sendBuffer();
 }
@@ -208,17 +236,30 @@ void runMenuAction(int item)
       while (!isJoystickButtonPressed()) delay(50);
       break;
     case MENU_ECHO:
-      drawStatus("Echo effect...", nullptr);
-      playEcho(0.2f, 0.5f);
+    {
+      float intensity = readJoystickXIntensity();
+      float delaySec = 0.1f + intensity * 0.4f;
+      float decay = 0.2f + intensity * 0.5f;
+      char info[64];
+      snprintf(info, sizeof(info), "Echo %.0fms decay %.2f", delaySec * 1000.0f, decay);
+      drawStatus("Echo effect...", info);
+      playEcho(delaySec, decay);
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
+    }
     case MENU_RINGMOD:
-      drawStatus("Ring modulation...", nullptr);
-      playRingMod(30.0f);
+    {
+      float intensity = readJoystickXIntensity();
+      float freq = 10.0f + intensity * 80.0f;
+      char info[64];
+      snprintf(info, sizeof(info), "Ring mod %.0fHz", freq);
+      drawStatus("Ring modulation...", info);
+      playRingMod(freq);
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
+    }
     default:
       break;
   }
@@ -231,7 +272,7 @@ void initI2S()
   i2s_config_t i2s_rx_config = {};
   i2s_rx_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   i2s_rx_config.sample_rate = SAMPLE_RATE;
-  i2s_rx_config.bits_per_sample = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_16BIT;
+  i2s_rx_config.bits_per_sample = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_32BIT;
   i2s_rx_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
   i2s_rx_config.communication_format = I2S_COMM_FORMAT_STAND_MSB;
   i2s_rx_config.dma_buf_count = 8;
@@ -360,20 +401,57 @@ void cleanRecording()
 #endif
 }
 
+void normalizeRecording(float targetPeak = 0.95f)
+{
+  int32_t maxSample = 0;
+  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  {
+    int32_t absSample = abs(record_buffer[i]);
+    if (absSample > maxSample) maxSample = absSample;
+  }
+
+  if (maxSample <= 0) return;
+
+  float scale = (INT16_MAX * targetPeak) / (float)maxSample;
+  if (scale <= 1.0f) return;
+
+  for (int i = 0; i < SAMPLE_COUNT; ++i)
+  {
+    int32_t scaled = int32_t(record_buffer[i] * scale);
+    if (scaled > INT16_MAX) scaled = INT16_MAX;
+    else if (scaled < INT16_MIN) scaled = INT16_MIN;
+    record_buffer[i] = (int16_t)scaled;
+  }
+}
+
 void recordToBuffer()
 {
-  size_t bytes_read = 0;
-  size_t to_read = SAMPLE_COUNT * sizeof(int16_t);
-  size_t offset = 0;
+  const size_t TEMP_SAMPLES = 256;
+  int32_t temp[TEMP_SAMPLES];
+  size_t samples_read = 0;
+  size_t sample_offset = 0;
   Serial.printf("Recording %d seconds (%d samples)...\n", RECORD_SECONDS, SAMPLE_COUNT);
-  while (offset < to_read)
+
+  while (sample_offset < SAMPLE_COUNT)
   {
-    size_t chunk = min((size_t)4096, to_read - offset);
-    i2s_read(I2S_RX_PORT, ((uint8_t *)record_buffer) + offset, chunk, &bytes_read, portMAX_DELAY);
-    offset += bytes_read;
+    size_t samples_to_read = min(TEMP_SAMPLES, SAMPLE_COUNT - sample_offset);
+    size_t bytes_to_read = samples_to_read * sizeof(int32_t);
+    size_t bytes_read = 0;
+
+    i2s_read(I2S_RX_PORT, temp, bytes_to_read, &bytes_read, portMAX_DELAY);
+    size_t read_samples = bytes_read / sizeof(int32_t);
+    if (read_samples == 0)
+      continue;
+
+    for (size_t i = 0; i < read_samples && sample_offset < SAMPLE_COUNT; ++i)
+    {
+      record_buffer[sample_offset++] = (int16_t)(temp[i] >> 8);
+    }
   }
+
   Serial.println("Recording complete.");
   cleanRecording();
+  normalizeRecording();
 }
 
 void playBufferSimple()
@@ -557,6 +635,7 @@ void setup()
   Wire.begin(DISPLAY_SDA, DISPLAY_SCL);
   u8g2.begin();
   pinMode(JOY_BTN_PIN, INPUT_PULLUP);
+  pinMode(JOY_X_PIN, INPUT);
   drawMenu();
 
   initI2S();
@@ -594,13 +673,22 @@ void loop()
       playResample(0.6f);
       break;
     case '4':
-      Serial.println("Echo 200ms...");
-      playEcho(0.2f, 0.5f);
+    {
+      float intensity = readJoystickXIntensity();
+      float delaySec = 0.1f + intensity * 0.4f;
+      float decay = 0.2f + intensity * 0.5f;
+      Serial.printf("Echo %.0fms decay %.2f...\n", delaySec * 1000.0f, decay);
+      playEcho(delaySec, decay);
       break;
+    }
     case '5':
-      Serial.println("Ring modulation 30Hz...");
-      playRingMod(30.0f);
+    {
+      float intensity = readJoystickXIntensity();
+      float freq = 10.0f + intensity * 80.0f;
+      Serial.printf("Ring modulation %.0fHz...\n", freq);
+      playRingMod(freq);
       break;
+    }
     default:
       break;
     }

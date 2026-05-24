@@ -24,8 +24,11 @@ MAX98357A amplifier (I2S TX):
 Optional display / joystick wiring (if using UI code):
 - OLED SDA -> ESP32 GPIO18
 - OLED SCL -> ESP32 GPIO16
+- Joystick X -> ESP32 GPIO17 (ADC)
 - Joystick Y -> ESP32 GPIO20 (ADC)
 - Joystick button -> ESP32 GPIO35 (digital input)
+
+Joystick X can be used to control effect intensity for echo and ring modulation.
 
 Build & upload
 
