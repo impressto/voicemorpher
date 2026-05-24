@@ -277,7 +277,7 @@ void initI2S()
   i2s_rx_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
   i2s_rx_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   i2s_rx_config.dma_buf_count = 8;
-  i2s_rx_config.dma_buf_len = 256;
+  i2s_rx_config.dma_buf_len = 1024;
   i2s_rx_config.use_apll = false;
 
   // TX config (DAC / amplifier)
@@ -482,15 +482,30 @@ void cleanRecording()
 void normalizeRecording(float targetPeak = 0.95f)
 {
   int32_t maxSample = 0;
+  int32_t minSample = 0;
   for (int i = 0; i < SAMPLE_COUNT; ++i)
   {
-    int32_t absSample = abs(record_buffer[i]);
-    if (absSample > maxSample) maxSample = absSample;
+    int32_t s = record_buffer[i];
+    if (s > maxSample) maxSample = s;
+    if (s < minSample) minSample = s;
   }
 
-  if (maxSample <= 0) return;
+  Serial.printf("Recording peak: max=%ld  min=%ld\n", (long)maxSample, (long)minSample);
 
-  float scale = (INT16_MAX * targetPeak) / (float)maxSample;
+  int32_t absPeak = max(maxSample, -minSample);
+  if (absPeak <= 0)
+  {
+    Serial.println("WARNING: silent recording — skipping normalization");
+    return;
+  }
+
+  float scale = (INT16_MAX * targetPeak) / (float)absPeak;
+  Serial.printf("Normalization scale: %.2fx\n", scale);
+  if (scale > 10.0f)
+  {
+    Serial.println("WARNING: scale > 10 — mic signal very weak, capping to prevent noise amplification");
+    scale = 10.0f;
+  }
   if (scale <= 1.0f) return;
 
   for (int i = 0; i < SAMPLE_COUNT; ++i)
@@ -505,29 +520,31 @@ void normalizeRecording(float targetPeak = 0.95f)
 void recordToBuffer()
 {
   const size_t TEMP_SAMPLES = 256;
-  int32_t temp[TEMP_SAMPLES];
-  size_t samples_read = 0;
+  int16_t temp[TEMP_SAMPLES]; // 16-bit to match I2S_BITS_PER_SAMPLE_16BIT
   size_t sample_offset = 0;
   Serial.printf("Recording %d seconds (%d samples)...\n", RECORD_SECONDS, SAMPLE_COUNT);
 
   while (sample_offset < SAMPLE_COUNT)
   {
-    size_t samples_to_read = min(TEMP_SAMPLES, SAMPLE_COUNT - sample_offset);
-    size_t bytes_to_read = samples_to_read * sizeof(int32_t);
+    size_t samples_to_read = min(TEMP_SAMPLES, (size_t)(SAMPLE_COUNT - sample_offset));
+    size_t bytes_to_read = samples_to_read * sizeof(int16_t);
     size_t bytes_read = 0;
 
     i2s_read(I2S_RX_PORT, temp, bytes_to_read, &bytes_read, portMAX_DELAY);
-    size_t read_samples = bytes_read / sizeof(int32_t);
+    size_t read_samples = bytes_read / sizeof(int16_t);
     if (read_samples == 0)
       continue;
 
     for (size_t i = 0; i < read_samples && sample_offset < SAMPLE_COUNT; ++i)
     {
-      record_buffer[sample_offset++] = (int16_t)(temp[i] >> 8);
+      record_buffer[sample_offset++] = temp[i];
     }
+    yield();
   }
 
-  Serial.println("Recording complete.");
+  Serial.printf("Recording complete. First 8 samples: %d %d %d %d %d %d %d %d\n",
+    record_buffer[0], record_buffer[1], record_buffer[2], record_buffer[3],
+    record_buffer[4], record_buffer[5], record_buffer[6], record_buffer[7]);
   cleanRecording();
   normalizeRecording();
 }
