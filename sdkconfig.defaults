@@ -1,0 +1,7 @@
+# Copy all ISR/interrupt code out of flash into PSRAM at boot.
+# Prevents flash-cache conflicts when OPI PSRAM is active.
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+
+# Give interrupts extra time to complete during PSRAM cache operations.
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=800

@@ -1593,13 +1593,28 @@ void setup()
   delay(1000);
   Serial.println("VoiceMorpher ESP32-S3 - initializing...");
 
-  record_buffer = (int16_t *)malloc(SAMPLE_RATE * 10 * sizeof(int16_t));
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  if (resetReason == ESP_RST_PANIC)
+    Serial.println("*** Last reset: PANIC/CRASH ***");
+  else if (resetReason == ESP_RST_INT_WDT)
+    Serial.println("*** Last reset: INTERRUPT WATCHDOG ***");
+  else if (resetReason == ESP_RST_TASK_WDT)
+    Serial.println("*** Last reset: TASK WATCHDOG ***");
+  else if (resetReason == ESP_RST_WDT)
+    Serial.println("*** Last reset: WATCHDOG ***");
+  else
+    Serial.printf("Last reset reason: %d\n", (int)resetReason);
+
+  // Must be internal DRAM — I2S ISR conflicts with PSRAM cache on ESP32-S3 OPI.
+  record_buffer = (int16_t *)heap_caps_malloc(
+      SAMPLE_RATE * g_max_record_secs * sizeof(int16_t),
+      MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (!record_buffer)
   {
-    Serial.println("FATAL: Failed to allocate record buffer");
+    Serial.println("FATAL: Failed to allocate record buffer in internal DRAM");
     while (1) delay(1000);
   }
-  Serial.println("✓ Record buffer: 10s @ 11025 Hz");
+  Serial.printf("✓ Record buffer: %ds @ %d Hz (internal DRAM)\n", g_max_record_secs, SAMPLE_RATE);
 
   pinMode(AMP_SD, OUTPUT);
   digitalWrite(AMP_SD, HIGH);
