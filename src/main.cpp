@@ -37,6 +37,7 @@ const int CHANNELS = 1; // mono
 static int active_sample_count = SAMPLE_RATE * 5;
 static int g_max_record_secs = 10;
 static int16_t *record_buffer = nullptr;
+static bool g_has_recording = false;
 
 // Playback volume config
 float playback_gain = DEFAULT_PLAYBACK_GAIN; // adjust default volume in src/config.h
@@ -50,11 +51,14 @@ enum MenuItem
   MENU_PLAY,
   MENU_PASSTHROUGH,
   MENU_REVERSE,
-  MENU_PITCH_UP,
-  MENU_PITCH_DOWN,
+  MENU_PITCH,
   MENU_ECHO,
   MENU_RINGMOD,
   MENU_STUTTER,
+  MENU_TREMOLO,
+  MENU_HAUNTED,
+  MENU_ALIEN,
+  MENU_MONSTER,
   MENU_COUNT
 };
 
@@ -63,11 +67,14 @@ static const char *menuLabels[MENU_COUNT] = {
   "Play raw",
   "Passthrough",
   "Reverse",
-  "Pitch up",
-  "Pitch down",
+  "Pitch",
   "Echo",
-  "Ring mod",
-  "Stutter"
+  "Star fighter",
+  "Stutter",
+  "Tremolo",
+  "Haunted",
+  "Alien",
+  "Monster"
 };
 
 int currentMenu = 0;
@@ -87,11 +94,16 @@ void runMenuAction(int item);
 void recordToBuffer();
 void playBufferSimple();
 void passthrough();
+void passthroughWithEffect(int fx);
 void playReverse();
 void playResample(float speed);
 void playEcho(float delaySec, float decay);
 void playRingMod(float freq);
 void playStutter(float chunkSec, int repeats);
+void playTremolo(float rate);
+void playHaunted(float delaySec, float decay);
+void playAlien(float speed, float ringFreq);
+void playMonster(float speed, float delaySec, float decay);
 
 static int readJoystickAxis(int pin)
 {
@@ -249,11 +261,15 @@ static int showDurationSubMenu(int currentSecs)
 }
 
 // Persistent effect levels (0.0–1.0) remembered between plays
-static float s_pitchUpLevel   = 0.5f;
-static float s_pitchDownLevel = 0.5f;
-static float s_echoLevel      = 0.5f;
-static float s_ringmodLevel   = 0.5f;
-static float s_stutterLevel   = 0.5f;
+// neutral (1.0x) sits at level = (1.0 - 0.3) / (2.5 - 0.3) ≈ 0.318
+static float s_pitchLevel   = 0.318f;
+static float s_echoLevel    = 0.5f;
+static float s_ringmodLevel = 0.5f;
+static float s_stutterLevel = 0.5f;
+static float s_tremoloLevel = 0.3f;
+static float s_hauntedLevel = 0.5f;
+static float s_alienLevel   = 0.5f;
+static float s_monsterLevel = 0.5f;
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
 // Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
@@ -263,6 +279,7 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
 {
   float level = current;
   unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
 
   while (true)
   {
@@ -285,11 +302,12 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
     else
       snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
     u8g2.drawStr(2, 38, valBuf);
-    u8g2.drawStr(2, 50, "< X: adjust >");
+    u8g2.drawStr(2, 50, "< >:adjust  Y:back");
     u8g2.drawStr(2, 62, "Btn: play");
     u8g2.sendBuffer();
 
     int x = readJoystickAxis(JOY_X_PIN);
+    int y = readJoystickAxis(JOY_Y_PIN);
     unsigned long now = millis();
 
     if (x != 0 && now - lastMoveMs > 150)
@@ -299,6 +317,8 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
       if (level > 1.0f) level = 1.0f;
       lastMoveMs = now;
     }
+
+    if (y != 0) return -1.0f;
 
     if (isJoystickButtonPressed())
     {
@@ -310,10 +330,54 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
   }
 }
 
+// Joystick X cycles through live effect choices; button confirms.
+static int showPassthroughFxSubMenu()
+{
+  static const char *choices[] = { "Plain", "Echo", "Star Fighter", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up" };
+  const int NUM_CHOICES = 8;
+  int sel = 0;
+  unsigned long lastMoveMs = 0;
+
+  while (true)
+  {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(2, 10, "Passthrough FX");
+    char valBuf[32];
+    snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
+    u8g2.drawStr(2, 30, valBuf);
+    u8g2.drawStr(2, 50, "< X: choose >");
+    u8g2.drawStr(2, 62, "Btn: start");
+    u8g2.sendBuffer();
+
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+    if (x != 0 && now - lastMoveMs > 200)
+    {
+      sel = (sel + x + NUM_CHOICES) % NUM_CHOICES;
+      lastMoveMs = now;
+    }
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return sel;
+    }
+    delay(20);
+  }
+}
+
 void runMenuAction(int item)
 {
-  // Debounce: release twhen we select an effect can we show a but menu to se the effect level. We can use the joystick x pin to set the levelshe button press that opened this action
   while (isJoystickButtonPressed()) delay(10);
+
+  // Block all playback effects if nothing has been recorded yet
+  if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH)
+  {
+    drawStatus("No recording!", "Record first");
+    delay(1500);
+    drawMenu();
+    return;
+  }
 
   switch (item)
   {
@@ -336,79 +400,142 @@ void runMenuAction(int item)
       while (!isJoystickButtonPressed()) delay(50);
       break;
     case MENU_PASSTHROUGH:
-      drawStatus("Passthrough mode", "Press button to stop");
-      passthrough();
-      drawStatus("Passthrough stopped", "Press button");
+    {
+      int fx = showPassthroughFxSubMenu();
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up" };
+      char status[32];
+      snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
+      drawStatus("Passthrough", status);
+      passthroughWithEffect(fx);
+      drawStatus("Passthrough done", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
+    }
     case MENU_REVERSE:
       drawStatus("Playing reverse...", nullptr);
       playReverse();
       drawStatus("Done.", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
-    case MENU_PITCH_UP:
+    case MENU_PITCH:
     {
-      s_pitchUpLevel = showLevelSubMenu("Pitch Up", "Speed", s_pitchUpLevel, 1.1f, 2.5f, "x");
-      float speed = 1.1f + s_pitchUpLevel * 1.4f;
-      char info[32];
-      snprintf(info, sizeof(info), "Speed: %.2fx", speed);
-      drawStatus("Pitch up...", info);
-      playResample(speed);
-      drawStatus("Done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
-      break;
-    }
-    case MENU_PITCH_DOWN:
-    {
-      s_pitchDownLevel = showLevelSubMenu("Pitch Down", "Speed", s_pitchDownLevel, 0.3f, 0.9f, "x");
-      float speed = 0.3f + s_pitchDownLevel * 0.6f;
-      char info[32];
-      snprintf(info, sizeof(info), "Speed: %.2fx", speed);
-      drawStatus("Pitch down...", info);
-      playResample(speed);
-      drawStatus("Done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
+      // range 0.3x–2.5x; level 0.318 = 1.0x (neutral/no change)
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Pitch", "Speed", s_pitchLevel, 0.3f, 2.5f, "x");
+        if (lvl < 0.0f) break;
+        s_pitchLevel = lvl;
+        float speed = 0.3f + s_pitchLevel * 2.2f;
+        char info[32];
+        snprintf(info, sizeof(info), "Speed: %.2fx", speed);
+        drawStatus("Pitch...", info);
+        playResample(speed);
+      }
       break;
     }
     case MENU_ECHO:
     {
-      s_echoLevel = showLevelSubMenu("Echo", "Delay", s_echoLevel, 100.0f, 500.0f, "ms");
-      float delaySec = (100.0f + s_echoLevel * 400.0f) / 1000.0f;
-      float decay = 0.2f + s_echoLevel * 0.5f;
-      char info[32];
-      snprintf(info, sizeof(info), "%.0fms dec %.2f", delaySec * 1000.0f, decay);
-      drawStatus("Echo...", info);
-      playEcho(delaySec, decay);
-      drawStatus("Done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Echo", "Delay", s_echoLevel, 100.0f, 500.0f, "ms");
+        if (lvl < 0.0f) break;
+        s_echoLevel = lvl;
+        float delaySec = (100.0f + s_echoLevel * 400.0f) / 1000.0f;
+        float decay = 0.2f + s_echoLevel * 0.5f;
+        char info[32];
+        snprintf(info, sizeof(info), "%.0fms dec %.2f", delaySec * 1000.0f, decay);
+        drawStatus("Echo...", info);
+        playEcho(delaySec, decay);
+      }
       break;
     }
     case MENU_RINGMOD:
     {
-      s_ringmodLevel = showLevelSubMenu("Ring Mod", "Freq", s_ringmodLevel, 10.0f, 90.0f, "Hz");
-      float freq = 10.0f + s_ringmodLevel * 80.0f;
-      char info[32];
-      snprintf(info, sizeof(info), "Freq: %.0fHz", freq);
-      drawStatus("Ring mod...", info);
-      playRingMod(freq);
-      drawStatus("Done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Star fighter", "Freq", s_ringmodLevel, 10.0f, 90.0f, "Hz");
+        if (lvl < 0.0f) break;
+        s_ringmodLevel = lvl;
+        float freq = 10.0f + s_ringmodLevel * 80.0f;
+        char info[32];
+        snprintf(info, sizeof(info), "Freq: %.0fHz", freq);
+        drawStatus("Star fighter...", info);
+        playRingMod(freq);
+      }
       break;
     }
     case MENU_STUTTER:
     {
       // level 0 = subtle (long 200ms chunks, 2 repeats)
       // level 1 = heavy  (short 30ms chunks, 6 repeats)
-      s_stutterLevel = showLevelSubMenu("Stutter", "Intensity", s_stutterLevel, 0.0f, 100.0f, "%");
-      float chunkSec = (200.0f - s_stutterLevel * 0.01f * 170.0f) / 1000.0f;
-      int repeats = 2 + (int)(s_stutterLevel * 0.04f);
-      char info[32];
-      snprintf(info, sizeof(info), "%.0fms x%d", chunkSec * 1000.0f, repeats);
-      drawStatus("Stutter...", info);
-      playStutter(chunkSec, repeats);
-      drawStatus("Done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Stutter", "Intensity", s_stutterLevel, 0.0f, 100.0f, "%");
+        if (lvl < 0.0f) break;
+        s_stutterLevel = lvl;
+        float chunkSec = (200.0f - s_stutterLevel * 0.01f * 170.0f) / 1000.0f;
+        int repeats = 2 + (int)(s_stutterLevel * 0.04f);
+        char info[32];
+        snprintf(info, sizeof(info), "%.0fms x%d", chunkSec * 1000.0f, repeats);
+        drawStatus("Stutter...", info);
+        playStutter(chunkSec, repeats);
+      }
+      break;
+    }
+    case MENU_TREMOLO:
+    {
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Tremolo", "Rate", s_tremoloLevel, 2.0f, 15.0f, "Hz");
+        if (lvl < 0.0f) break;
+        s_tremoloLevel = lvl;
+        float rate = 2.0f + s_tremoloLevel * 13.0f;
+        char info[32];
+        snprintf(info, sizeof(info), "Rate: %.1fHz", rate);
+        drawStatus("Tremolo...", info);
+        playTremolo(rate);
+      }
+      break;
+    }
+    case MENU_HAUNTED:
+    {
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Haunted", "Echo depth", s_hauntedLevel, 10.0f, 70.0f, "%");
+        if (lvl < 0.0f) break;
+        s_hauntedLevel = lvl;
+        float decay = 0.1f + s_hauntedLevel * 0.6f;
+        drawStatus("Haunted...", "Reverse + Echo");
+        playHaunted(0.25f, decay);
+      }
+      break;
+    }
+    case MENU_ALIEN:
+    {
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Alien", "Ring freq", s_alienLevel, 20.0f, 80.0f, "Hz");
+        if (lvl < 0.0f) break;
+        s_alienLevel = lvl;
+        float ringFreq = 20.0f + s_alienLevel * 60.0f;
+        char info[32];
+        snprintf(info, sizeof(info), "Pitch up + %.0fHz", ringFreq);
+        drawStatus("Alien...", info);
+        playAlien(1.6f, ringFreq);
+      }
+      break;
+    }
+    case MENU_MONSTER:
+    {
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Monster", "Echo depth", s_monsterLevel, 10.0f, 70.0f, "%");
+        if (lvl < 0.0f) break;
+        s_monsterLevel = lvl;
+        float decay = 0.1f + s_monsterLevel * 0.6f;
+        drawStatus("Monster...", "Pitch dn + Echo");
+        playMonster(0.5f, 0.3f, decay);
+      }
       break;
     }
     default:
@@ -598,6 +725,7 @@ static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
       return;
     }
     offset += written_samples;
+    if (isJoystickButtonPressed()) return;
   }
 }
 
@@ -689,6 +817,7 @@ void recordToBuffer()
     record_buffer[4], record_buffer[5], record_buffer[6], record_buffer[7]);
   cleanRecording();
   normalizeRecording();
+  g_has_recording = true;
 }
 
 void playBufferSimple()
@@ -732,6 +861,7 @@ void playReverse()
     }
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, count * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+    if (isJoystickButtonPressed()) break;
     idx -= count;
   }
   stopTxAndFlush();
@@ -754,6 +884,7 @@ void playResample(float speed)
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
     }
     idx += speed;
   }
@@ -789,6 +920,7 @@ void playEcho(float delaySec, float decay)
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
     }
   }
 
@@ -820,6 +952,7 @@ void playRingMod(float freq)
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
     }
   }
 
@@ -864,6 +997,366 @@ void playStutter(float chunkSec, int repeats)
   stopTxAndFlush();
 }
 
+void playTremolo(float rate)
+{
+  // Amplitude modulation: volume oscillates at the given rate in Hz.
+  const float DEPTH = 0.85f;
+  const int CHUNK_SAMPLES = 256;
+  int16_t chunk[CHUNK_SAMPLES];
+  int chunkIndex = 0;
+
+  for (int i = 0; i < active_sample_count; ++i)
+  {
+    float t = (float)i / SAMPLE_RATE;
+    float env = (1.0f - DEPTH) + DEPTH * (0.5f + 0.5f * sinf(2.0f * 3.14159265f * rate * t));
+    int32_t out = (int32_t)((float)record_buffer[i] * env);
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+    chunk[chunkIndex++] = applyPlaybackGain((int16_t)out);
+
+    if (chunkIndex >= CHUNK_SAMPLES)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+      chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
+    }
+  }
+
+  if (chunkIndex > 0)
+  {
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  stopTxAndFlush();
+}
+
+void playHaunted(float delaySec, float decay)
+{
+  // Play the recording backwards and mix in an echo that trails behind each reversed sound.
+  // In reversed playback "behind" means a higher index in the original buffer.
+  int delaySamples = (int)(delaySec * SAMPLE_RATE);
+  const int CHUNK_SAMPLES = 256;
+  int16_t chunk[CHUNK_SAMPLES];
+  int chunkIndex = 0;
+
+  for (int i = active_sample_count - 1; i >= 0; --i)
+  {
+    int32_t out = record_buffer[i];
+    int echoIdx = i + delaySamples;
+    if (echoIdx < active_sample_count)
+      out += (int32_t)(record_buffer[echoIdx] * decay);
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+    chunk[chunkIndex++] = applyPlaybackGain((int16_t)out);
+
+    if (chunkIndex >= CHUNK_SAMPLES)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+      chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
+    }
+  }
+
+  if (chunkIndex > 0)
+  {
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  stopTxAndFlush();
+}
+
+void playAlien(float speed, float ringFreq)
+{
+  // Pitch-shifted playback with simultaneous ring modulation.
+  // speed > 1.0 raises pitch; ringFreq controls the modulation buzz.
+  // Ring mod timing follows output time so the buzz stays steady regardless of pitch.
+  float idx = 0.0f;
+  int outSample = 0;
+  const int CHUNK_SAMPLES = 256;
+  int16_t chunk[CHUNK_SAMPLES];
+  int chunkIndex = 0;
+
+  while ((int)idx < active_sample_count)
+  {
+    float t = (float)outSample / SAMPLE_RATE;
+    float mod = sinf(2.0f * 3.14159265f * ringFreq * t);
+    int32_t out = (int32_t)((float)record_buffer[(int)idx] * mod);
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+    chunk[chunkIndex++] = applyPlaybackGain((int16_t)out);
+
+    if (chunkIndex >= CHUNK_SAMPLES)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+      chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
+    }
+    idx += speed;
+    outSample++;
+  }
+
+  if (chunkIndex > 0)
+  {
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  stopTxAndFlush();
+}
+
+void playMonster(float speed, float delaySec, float decay)
+{
+  // Slow pitch-shifted playback with a live echo applied via a small circular delay buffer.
+  // Because resampling changes the output length, a fixed-size delay buffer is used
+  // rather than reading back into the original record_buffer.
+  int delayLen = (int)(delaySec * SAMPLE_RATE) + 1;
+  int16_t *echoBuf = (int16_t *)calloc(delayLen, sizeof(int16_t));
+  if (!echoBuf)
+  {
+    playResample(speed);
+    return;
+  }
+  int echoWr = 0;
+
+  float idx = 0.0f;
+  const int CHUNK_SAMPLES = 256;
+  int16_t chunk[CHUNK_SAMPLES];
+  int chunkIndex = 0;
+
+  while ((int)idx < active_sample_count)
+  {
+    int32_t sample = record_buffer[(int)idx];
+    int32_t echSample = echoBuf[echoWr];  // oldest entry = delayLen output samples ago
+    int32_t out = sample + (int32_t)(echSample * decay);
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+
+    echoBuf[echoWr] = (int16_t)out;
+    echoWr = (echoWr + 1) % delayLen;
+
+    chunk[chunkIndex++] = applyPlaybackGain((int16_t)out);
+    if (chunkIndex >= CHUNK_SAMPLES)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+      chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
+    }
+    idx += speed;
+  }
+
+  if (chunkIndex > 0)
+  {
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  free(echoBuf);
+  stopTxAndFlush();
+}
+
+void passthroughWithEffect(int fx)
+{
+  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up
+  const int CHUNK_SAMPLES = 256;
+  int16_t chunk[CHUNK_SAMPLES];
+
+  // Echo: 250 ms circular delay buffer
+  const int ECHO_LEN = (int)(0.25f * SAMPLE_RATE);
+  int16_t *echoBuf = nullptr;
+  int echoWr = 0;
+  if (fx == 1)
+  {
+    echoBuf = (int16_t *)calloc(ECHO_LEN, sizeof(int16_t));
+    if (!echoBuf) fx = 0;
+  }
+
+  // Chorus: 50 ms delay buffer, LFO sweeps read point 10–30 ms back
+  const int CHORUS_LEN = (int)(0.05f * SAMPLE_RATE) + 1;
+  int16_t *chorusBuf = nullptr;
+  int chorusWr = 0;
+  float chorusPhase = 0.0f;
+  if (fx == 4)
+  {
+    chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+    if (!chorusBuf) fx = 0;
+  }
+
+  // Telephone bandpass state (1st-order HP ~300 Hz + LP ~3000 Hz at 11025 Hz)
+  // HP: α = RC/(RC+T) = 0.854   LP: α = T/(RC+T) = 0.631
+  float hp_x1 = 0.0f, hp_y1 = 0.0f;
+  float lp_y1 = 0.0f;
+
+  // Pitch Up: granular pitch shift — reads the ring buffer at PITCH_UP speed with linear
+  // interpolation, jumping back one grain whenever the read pointer catches the write
+  // pointer, and crossfading at each jump to avoid clicks.  Words stay intelligible and
+  // tempo is approximately preserved (unlike simple decimation which also speeds up).
+  const int   PITCH_BUF      = 1024;   // ring buffer size (~93 ms at 11025 Hz)
+  const int   PITCH_GRAIN    = 256;    // jump distance (~23 ms)
+  const int   PITCH_FADE_LEN = 48;     // crossfade samples (~4 ms)
+  const int   PITCH_GAP      = 48;     // min read-to-write gap before jumping
+  const float PITCH_UP       = 1.5f;   // pitch factor (1.5 = one musical fifth higher)
+  int16_t *pitchRing  = nullptr;
+  int32_t  pitchWPos  = 0;
+  float    pitchRPos  = -(float)(PITCH_GRAIN * 2);  // start behind; outputs silence until filled
+  float    pitchRPos2 = 0.0f;
+  int      pitchFade  = 0;
+  if (fx == 7)
+  {
+    pitchRing = (int16_t *)calloc(PITCH_BUF, sizeof(int16_t));
+    if (!pitchRing) fx = 0;
+  }
+
+  // Phase accumulators
+  float ringPhase = 0.0f;
+  float tremPhase = 0.0f;
+  const float RING_FREQ  = 40.0f;
+  const float TREM_FREQ  = 6.0f;
+  const float TREM_DEPTH = 0.85f;
+
+  while (true)
+  {
+    size_t bytes_read = 0;
+    i2s_read(I2S_RX_PORT, chunk, CHUNK_SAMPLES * sizeof(int16_t), &bytes_read, portMAX_DELAY);
+    size_t n = bytes_read / sizeof(int16_t);
+
+    for (size_t i = 0; i < n; ++i)
+    {
+      int32_t s = chunk[i];
+
+      if (fx == 1)  // echo
+      {
+        int32_t echo = echoBuf[echoWr];
+        int32_t out  = s + (int32_t)(echo * 0.4f);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        echoBuf[echoWr] = (int16_t)out;
+        echoWr = (echoWr + 1) % ECHO_LEN;
+        s = out;
+      }
+      else if (fx == 2)  // star fighter ring mod
+      {
+        float mod = sinf(2.0f * 3.14159265f * ringPhase);
+        ringPhase += RING_FREQ / SAMPLE_RATE;
+        if (ringPhase >= 1.0f) ringPhase -= 1.0f;
+        int32_t out = (int32_t)((float)s * mod);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 3)  // tremolo
+      {
+        float env = (1.0f - TREM_DEPTH) + TREM_DEPTH * (0.5f + 0.5f * sinf(2.0f * 3.14159265f * tremPhase));
+        tremPhase += TREM_FREQ / SAMPLE_RATE;
+        if (tremPhase >= 1.0f) tremPhase -= 1.0f;
+        int32_t out = (int32_t)((float)s * env);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 4)  // chorus — modulated short delay mixed with original
+      {
+        float lfo = 0.5f + 0.5f * sinf(2.0f * 3.14159265f * chorusPhase);
+        chorusPhase += 0.5f / SAMPLE_RATE;  // 0.5 Hz sweep
+        if (chorusPhase >= 1.0f) chorusPhase -= 1.0f;
+        int delaySmp = (int)(0.010f * SAMPLE_RATE + lfo * 0.020f * SAMPLE_RATE);
+        int readIdx  = (chorusWr - delaySmp + CHORUS_LEN) % CHORUS_LEN;
+        int16_t del  = chorusBuf[readIdx];
+        chorusBuf[chorusWr] = (int16_t)s;
+        chorusWr = (chorusWr + 1) % CHORUS_LEN;
+        int32_t out = (int32_t)(0.6f * s + 0.6f * del);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 5)  // distortion — 4× soft clip via x/(1+|x|) saturation
+      {
+        float x = (float)s / INT16_MAX * 4.0f;
+        float y = x / (1.0f + fabsf(x));
+        s = (int32_t)(y * INT16_MAX);
+      }
+      else if (fx == 6)  // telephone bandpass
+      {
+        float in   = (float)s;
+        float hp   = 0.854f * (hp_y1 + in - hp_x1);
+        hp_x1 = in;  hp_y1 = hp;
+        float lp   = lp_y1 + 0.631f * (hp - lp_y1);
+        lp_y1 = lp;
+        int32_t out = (int32_t)(lp * 2.0f);  // compensate for filter attenuation
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 7)  // pitch up — granular, tempo preserved
+      {
+        // Write incoming mic sample into the ring buffer
+        pitchRing[pitchWPos % PITCH_BUF] = (int16_t)s;
+        pitchWPos++;
+
+        float outF = 0.0f;
+        if (pitchFade > 0)
+        {
+          // Cross-fade: primary (new pos) fades in, secondary (old pos) fades out
+          float alpha = (float)pitchFade / PITCH_FADE_LEN;
+          int p0 = ((int)pitchRPos)  % PITCH_BUF, p1 = (p0 + 1) % PITCH_BUF;
+          float pf = pitchRPos  - floorf(pitchRPos);
+          float s1 = (1.0f - pf) * pitchRing[p0] + pf * pitchRing[p1];
+          int q0 = ((int)pitchRPos2) % PITCH_BUF, q1 = (q0 + 1) % PITCH_BUF;
+          float qf = pitchRPos2 - floorf(pitchRPos2);
+          float s2 = (1.0f - qf) * pitchRing[q0] + qf * pitchRing[q1];
+          outF = (1.0f - alpha) * s1 + alpha * s2;
+          pitchRPos2 += PITCH_UP;
+          pitchFade--;
+        }
+        else if (pitchRPos >= 0.0f)
+        {
+          int i0 = ((int)pitchRPos) % PITCH_BUF, i1 = (i0 + 1) % PITCH_BUF;
+          float fr = pitchRPos - floorf(pitchRPos);
+          outF = (1.0f - fr) * pitchRing[i0] + fr * pitchRing[i1];
+        }
+
+        pitchRPos += PITCH_UP;
+
+        // If read pointer is getting too close to write, jump back one grain and crossfade
+        if (pitchRPos >= 0.0f && pitchWPos - (int)pitchRPos < PITCH_GAP)
+        {
+          pitchRPos2 = pitchRPos;
+          pitchRPos -= (float)PITCH_GRAIN;
+          pitchFade  = PITCH_FADE_LEN;
+          // Normalize to prevent float precision loss over long sessions
+          if (pitchWPos > PITCH_BUF * 8)
+          {
+            int sub = (pitchWPos / PITCH_BUF - 4) * PITCH_BUF;
+            pitchWPos -= sub;
+            pitchRPos -= (float)sub;
+            pitchRPos2 -= (float)sub;
+          }
+        }
+
+        int32_t out = (int32_t)outF;
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+
+      int32_t gained = (int32_t)((float)s * playback_gain);
+      if (gained > INT16_MAX) gained = INT16_MAX;
+      if (gained < INT16_MIN) gained = INT16_MIN;
+      chunk[i] = (int16_t)gained;
+    }
+
+    size_t bytes_written = 0;
+    i2s_write(I2S_TX_PORT, chunk, bytes_read, &bytes_written, portMAX_DELAY);
+
+    if (isJoystickButtonPressed() || Serial.available()) break;
+  }
+
+  if (echoBuf)   free(echoBuf);
+  if (chorusBuf) free(chorusBuf);
+  if (pitchRing) free(pitchRing);
+}
+
 void passthrough()
 {
   Serial.println("Passthrough: speak into mic, output will follow (Ctrl-C to stop via reset).\n");
@@ -906,10 +1399,10 @@ void setup()
   u8g2.begin();
   pinMode(JOY_BTN_PIN, INPUT_PULLUP);
   pinMode(JOY_X_PIN, INPUT);
-  drawMenu();
 
   initI2S();
   playStartupWav();
+  drawMenu();
 
   Serial.println("Ready. Commands:\n r = record  p = play  v = passthrough\n1 = play reverse 2 = pitch up 3 = pitch down 4 = echo 5 = ring mod\n");
 }
