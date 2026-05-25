@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <LittleFS.h>
 #include "driver/i2s.h"
 #include "config.h"
 
@@ -39,7 +40,7 @@ static int16_t *record_buffer = nullptr;
 
 // Playback volume config
 float playback_gain = DEFAULT_PLAYBACK_GAIN; // adjust default volume in src/config.h
-
+  
 // Menu and UI
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
@@ -499,6 +500,74 @@ static void stopTxAndFlush()
   i2s_start(I2S_TX_PORT);
 }
 
+static void playStartupWav()
+{
+  if (!LittleFS.begin(true))
+  {
+    Serial.println("LittleFS mount failed — skipping startup sound");
+    return;
+  }
+
+  File f = LittleFS.open("/voicemorpher.wav", "r");
+  if (!f)
+  {
+    Serial.println("voicemorpher.wav not found in LittleFS");
+    return;
+  }
+
+  // Parse RIFF header
+  uint8_t riff[12];
+  if (f.read(riff, 12) != 12 || riff[0] != 'R' || riff[1] != 'I')
+  {
+    Serial.println("Startup WAV: invalid RIFF header");
+    f.close(); return;
+  }
+
+  // Scan chunks for fmt and data
+  bool foundData = false;
+  uint8_t chunkHdr[8];
+  while (f.read(chunkHdr, 8) == 8)
+  {
+    uint32_t sz = (uint32_t)chunkHdr[4] | ((uint32_t)chunkHdr[5] << 8) |
+                  ((uint32_t)chunkHdr[6] << 16) | ((uint32_t)chunkHdr[7] << 24);
+    if (chunkHdr[0] == 'f' && chunkHdr[1] == 'm' && chunkHdr[2] == 't')
+    {
+      uint8_t fmt[16];
+      f.read(fmt, 16);
+      if (sz > 16) f.seek(sz - 16, SeekCur);
+    }
+    else if (chunkHdr[0] == 'd' && chunkHdr[1] == 'a' && chunkHdr[2] == 't' && chunkHdr[3] == 'a')
+    {
+      foundData = true;
+      break;
+    }
+    else
+    {
+      f.seek(sz, SeekCur);
+    }
+  }
+
+  if (!foundData)
+  {
+    Serial.println("Startup WAV: no data chunk found");
+    f.close(); return;
+  }
+
+  drawStatus("Audio test...", "voicemorpher.wav");
+  Serial.println("Playing startup WAV...");
+
+  uint8_t buf[512];
+  size_t bytesRead;
+  while ((bytesRead = f.read(buf, sizeof(buf))) > 0)
+  {
+    size_t bytesWritten = 0;
+    i2s_write(I2S_TX_PORT, buf, bytesRead, &bytesWritten, portMAX_DELAY);
+  }
+
+  f.close();
+  stopTxAndFlush();
+  Serial.println("Startup WAV done.");
+}
 
 static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
 {
@@ -840,6 +909,7 @@ void setup()
   drawMenu();
 
   initI2S();
+  playStartupWav();
 
   Serial.println("Ready. Commands:\n r = record  p = play  v = passthrough\n1 = play reverse 2 = pitch up 3 = pitch down 4 = echo 5 = ring mod\n");
 }
