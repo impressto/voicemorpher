@@ -2,6 +2,9 @@
 
 Turn your voice into something completely different! This project lets you record your voice and apply real-time sound effects like pitch shifting, reverse, echo, stutter, and ring modulation — all controlled with a joystick and displayed on a small screen.
 
+<img width="1200" height="655" alt="voicemorpher_diagram" src="https://github.com/user-attachments/assets/f9d1c7ff-7ec6-4ded-a6cd-30878f4e66e6" />
+
+
 ---
 
 ## How It Works
