@@ -59,6 +59,7 @@ enum MenuItem
   MENU_HAUNTED,
   MENU_ALIEN,
   MENU_MONSTER,
+  MENU_CHORUS,
   MENU_COUNT
 };
 
@@ -74,7 +75,8 @@ static const char *menuLabels[MENU_COUNT] = {
   "Tremolo",
   "Haunted",
   "Alien",
-  "Monster"
+  "Monster",
+  "Chorus"
 };
 
 int currentMenu = 0;
@@ -104,6 +106,7 @@ void playTremolo(float rate);
 void playHaunted(float delaySec, float decay);
 void playAlien(float speed, float ringFreq);
 void playMonster(float speed, float delaySec, float decay);
+void playChorus(float rate, float depth);
 
 static int readJoystickAxis(int pin)
 {
@@ -270,6 +273,7 @@ static float s_tremoloLevel = 0.3f;
 static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
+static float s_chorusLevel  = 0.5f;
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
 // Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
@@ -396,8 +400,6 @@ void runMenuAction(int item)
     case MENU_PLAY:
       drawStatus("Playing raw...", nullptr);
       playBufferSimple();
-      drawStatus("Playback done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
       break;
     case MENU_PASSTHROUGH:
     {
@@ -414,8 +416,6 @@ void runMenuAction(int item)
     case MENU_REVERSE:
       drawStatus("Playing reverse...", nullptr);
       playReverse();
-      drawStatus("Done.", "Press button");
-      while (!isJoystickButtonPressed()) delay(50);
       break;
     case MENU_PITCH:
     {
@@ -535,6 +535,22 @@ void runMenuAction(int item)
         float decay = 0.1f + s_monsterLevel * 0.6f;
         drawStatus("Monster...", "Pitch dn + Echo");
         playMonster(0.5f, 0.3f, decay);
+      }
+      break;
+    }
+    case MENU_CHORUS:
+    {
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Chorus", "Depth", s_chorusLevel, 0.0f, 100.0f, "%");
+        if (lvl < 0.0f) break;
+        s_chorusLevel = lvl;
+        float rate  = 0.5f;
+        float depth = s_chorusLevel;
+        char info[32];
+        snprintf(info, sizeof(info), "Rate:%.1fHz d:%.0f%%", rate, depth * 100.0f);
+        drawStatus("Chorus...", info);
+        playChorus(rate, depth);
       }
       break;
     }
@@ -1153,6 +1169,61 @@ void playMonster(float speed, float delaySec, float decay)
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
   free(echoBuf);
+  stopTxAndFlush();
+}
+
+void playChorus(float rate, float depth)
+{
+  // LFO sweeps a short delay (10–30 ms) at the given rate in Hz.
+  // depth in [0,1] scales the wet/dry mix: 0 = subtle, 1 = full chorus.
+  const int CHORUS_LEN = (int)(0.05f * SAMPLE_RATE) + 1;
+  int16_t *chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+  if (!chorusBuf)
+  {
+    playBufferSimple();
+    return;
+  }
+
+  const int CHUNK_SAMPLES = 256;
+  int16_t chunk[CHUNK_SAMPLES];
+  int chunkIndex = 0;
+  int chorusWr = 0;
+  float chorusPhase = 0.0f;
+  float wet = 0.4f + depth * 0.5f;   // 0.4 – 0.9
+  float dry = 1.0f - wet * 0.4f;     // keeps overall level stable
+
+  for (int i = 0; i < active_sample_count; ++i)
+  {
+    float lfo = 0.5f + 0.5f * sinf(2.0f * 3.14159265f * chorusPhase);
+    chorusPhase += rate / SAMPLE_RATE;
+    if (chorusPhase >= 1.0f) chorusPhase -= 1.0f;
+
+    int delaySmp = (int)(0.010f * SAMPLE_RATE + lfo * 0.020f * SAMPLE_RATE);
+    int readIdx  = (chorusWr - delaySmp + CHORUS_LEN) % CHORUS_LEN;
+    int16_t del  = chorusBuf[readIdx];
+    chorusBuf[chorusWr] = record_buffer[i];
+    chorusWr = (chorusWr + 1) % CHORUS_LEN;
+
+    int32_t out = (int32_t)(dry * record_buffer[i] + wet * del);
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+    chunk[chunkIndex++] = applyPlaybackGain((int16_t)out);
+
+    if (chunkIndex >= CHUNK_SAMPLES)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+      chunkIndex = 0;
+      if (isJoystickButtonPressed()) break;
+    }
+  }
+
+  if (chunkIndex > 0)
+  {
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  free(chorusBuf);
   stopTxAndFlush();
 }
 
