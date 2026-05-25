@@ -62,6 +62,8 @@ enum MenuItem
   MENU_CHORUS,
   MENU_SAVE,
   MENU_LOAD,
+  MENU_LONG_REC,
+  MENU_LONG_PLAY,
   MENU_COUNT
 };
 
@@ -80,7 +82,9 @@ static const char *menuLabels[MENU_COUNT] = {
   "Monster",
   "Chorus",
   "Save",
-  "Load"
+  "Load",
+  "Long Record",
+  "Long Play"
 };
 
 int currentMenu = 0;
@@ -111,6 +115,8 @@ void playHaunted(float delaySec, float decay);
 void playAlien(float speed, float ringFreq);
 void playMonster(float speed, float delaySec, float decay);
 void playChorus(float rate, float depth);
+static int16_t applyPlaybackGain(int16_t sample);
+static void stopTxAndFlush();
 
 static int readJoystickAxis(int pin)
 {
@@ -218,11 +224,11 @@ void drawStatus(const char *line1, const char *line2)
   u8g2.sendBuffer();
 }
 
-// Shows a sub-menu to select recording duration (1 to g_max_record_secs seconds).
+// Shows a sub-menu to select recording duration (1 to maxSecs seconds).
 // Joystick X adjusts in 1-second steps; button confirms.
-static int showDurationSubMenu(int currentSecs)
+static int showDurationSubMenu(int currentSecs, int maxSecs = g_max_record_secs)
 {
-  int secs = currentSecs < 1 ? 1 : (currentSecs > g_max_record_secs ? g_max_record_secs : currentSecs);
+  int secs = currentSecs < 1 ? 1 : (currentSecs > maxSecs ? maxSecs : currentSecs);
   unsigned long lastMoveMs = 0;
 
   while (true)
@@ -233,8 +239,8 @@ static int showDurationSubMenu(int currentSecs)
 
     const int BX = 2, BY = 16, BW = 124, BH = 10;
     u8g2.drawFrame(BX, BY, BW, BH);
-    int filled = g_max_record_secs > 1
-                   ? (int)((float)(secs - 1) / (g_max_record_secs - 1) * (BW - 2))
+    int filled = maxSecs > 1
+                   ? (int)((float)(secs - 1) / (maxSecs - 1) * (BW - 2))
                    : BW - 2;
     if (filled > 0)
       u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
@@ -253,7 +259,7 @@ static int showDurationSubMenu(int currentSecs)
     {
       secs += x;
       if (secs < 1) secs = 1;
-      if (secs > g_max_record_secs) secs = g_max_record_secs;
+      if (secs > maxSecs) secs = maxSecs;
       lastMoveMs = now;
     }
 
@@ -277,7 +283,9 @@ static float s_tremoloLevel = 0.3f;
 static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
-static float s_chorusLevel  = 0.5f;
+static float s_chorusLevel   = 0.5f;
+static int   g_long_rec_secs = 30;
+static const char *LONG_REC_PATH = "/longrec.pcm";
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
 // Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
@@ -356,6 +364,42 @@ static int showPassthroughFxSubMenu()
     u8g2.drawStr(2, 30, valBuf);
     u8g2.drawStr(2, 50, "< X: choose >");
     u8g2.drawStr(2, 62, "Btn: start");
+    u8g2.sendBuffer();
+
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+    if (x != 0 && now - lastMoveMs > 200)
+    {
+      sel = (sel + x + NUM_CHOICES) % NUM_CHOICES;
+      lastMoveMs = now;
+    }
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return sel;
+    }
+    delay(20);
+  }
+}
+
+static int showLongPlayFxSubMenu()
+{
+  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus" };
+  const int NUM_CHOICES = 5;
+  int sel = 0;
+  unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
+
+  while (true)
+  {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    u8g2.drawStr(2, 10, "Long Play FX");
+    char valBuf[32];
+    snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
+    u8g2.drawStr(2, 30, valBuf);
+    u8g2.drawStr(2, 50, "< X: choose >");
+    u8g2.drawStr(2, 62, "Btn: play");
     u8g2.sendBuffer();
 
     int x = readJoystickAxis(JOY_X_PIN);
@@ -497,12 +541,215 @@ static void loadRecording(int slot)
   delay(1200);
 }
 
+static void recordToLittleFS(int durationSecs)
+{
+  if (!LittleFS.begin(true)) { drawStatus("FS Error", "LittleFS failed"); delay(1500); return; }
+
+  size_t needed = sizeof(int32_t) + (size_t)durationSecs * SAMPLE_RATE * sizeof(int16_t);
+  // Remove old recording first so its blocks are counted as free space
+  if (LittleFS.exists(LONG_REC_PATH)) LittleFS.remove(LONG_REC_PATH);
+  size_t avail  = LittleFS.totalBytes() - LittleFS.usedBytes();
+  if (avail < needed)
+  {
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Need %luKB, have %luKB", (unsigned long)needed/1024, (unsigned long)avail/1024);
+    drawStatus("Not enough space", msg);
+    delay(2000);
+    return;
+  }
+
+  File f = LittleFS.open(LONG_REC_PATH, "w");
+  if (!f) { drawStatus("File error", "Cannot open"); delay(1500); return; }
+
+  int32_t plannedSamples = durationSecs * SAMPLE_RATE;
+  f.write((uint8_t *)&plannedSamples, sizeof(plannedSamples));
+
+  const int STAGE = 512;
+  int16_t stage[STAGE];
+  int32_t written = 0;
+  unsigned long startMs = millis();
+
+  while (written < plannedSamples)
+  {
+    // Draw progress every ~0.5s of audio
+    if (written % (SAMPLE_RATE / 2) < STAGE)
+    {
+      int elapsed = (int)(written / SAMPLE_RATE);
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tf);
+      u8g2.drawStr(2, 10, "Long Record");
+      const int BX = 2, BY = 16, BW = 124, BH = 10;
+      u8g2.drawFrame(BX, BY, BW, BH);
+      int filled = (int)((float)written / plannedSamples * (BW - 2));
+      if (filled > 0) u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
+      char timeBuf[32];
+      snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
+      u8g2.drawStr(2, 38, timeBuf);
+      u8g2.drawStr(2, 62, "Btn: stop early");
+      u8g2.sendBuffer();
+    }
+
+    int toRead = min((int32_t)STAGE, plannedSamples - written);
+    size_t bytesRead = 0;
+    i2s_read(I2S_RX_PORT, stage, toRead * sizeof(int16_t), &bytesRead, portMAX_DELAY);
+    int samplesRead = bytesRead / sizeof(int16_t);
+    if (samplesRead > 0)
+    {
+      f.write((uint8_t *)stage, samplesRead * sizeof(int16_t));
+      written += samplesRead;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      break;
+    }
+    yield();
+  }
+
+  f.close();
+
+  // Fix the header if we stopped early
+  if (written < plannedSamples)
+  {
+    File f2 = LittleFS.open(LONG_REC_PATH, "r+");
+    if (f2) { f2.seek(0); f2.write((uint8_t *)&written, sizeof(written)); f2.close(); }
+  }
+
+  char result[32];
+  snprintf(result, sizeof(result), "%ds saved", written / SAMPLE_RATE);
+  drawStatus("Long rec done!", result);
+  delay(1200);
+}
+
+// fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus
+static void playFromLittleFSWithEffect(int fx)
+{
+  if (!LittleFS.begin(true)) { drawStatus("FS Error", "LittleFS failed"); delay(1500); return; }
+
+  File f = LittleFS.open(LONG_REC_PATH, "r");
+  if (!f) { drawStatus("No long rec", "Record first"); delay(1500); return; }
+
+  int32_t headerSamples = 0;
+  if (f.read((uint8_t *)&headerSamples, sizeof(headerSamples)) != sizeof(headerSamples) || headerSamples <= 0)
+  {
+    f.close(); drawStatus("Bad file", "Corrupt"); delay(1500); return;
+  }
+  int32_t fileSamples = (f.size() - sizeof(int32_t)) / sizeof(int16_t);
+  int32_t totalSamples = min(headerSamples, fileSamples);
+
+  // Echo: 250ms circular delay buffer (auto-allocated from PSRAM if available)
+  const int ECHO_LEN = (int)(0.25f * SAMPLE_RATE);
+  int16_t *echoBuf = nullptr;
+  int echoWr = 0;
+  if (fx == 1)
+  {
+    echoBuf = (int16_t *)calloc(ECHO_LEN, sizeof(int16_t));
+    if (!echoBuf) fx = 0;
+  }
+
+  // Chorus: 50ms delay buffer, LFO sweeps read point 10–30ms back
+  const int CHORUS_LEN = (int)(0.05f * SAMPLE_RATE) + 1;
+  int16_t *chorusBuf = nullptr;
+  int chorusWr = 0;
+  float chorusPhase = 0.0f;
+  if (fx == 4)
+  {
+    chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+    if (!chorusBuf) fx = 0;
+  }
+
+  // Phase accumulators for math-only effects
+  float ringPhase = 0.0f;
+  float tremPhase = 0.0f;
+  const float RING_FREQ  = 50.0f;
+  const float TREM_RATE  = 6.0f;
+  const float TREM_DEPTH = 0.85f;
+
+  const int CHUNK = 256;
+  int16_t chunk[CHUNK];
+  int32_t played = 0;
+
+  while (played < totalSamples)
+  {
+    int toRead = min((int32_t)CHUNK, totalSamples - played);
+    size_t bytesRead = f.read((uint8_t *)chunk, toRead * sizeof(int16_t));
+    int samplesRead = bytesRead / sizeof(int16_t);
+    if (samplesRead == 0) break;
+
+    for (int i = 0; i < samplesRead; ++i)
+    {
+      int32_t s = chunk[i];
+
+      if (fx == 1)  // echo
+      {
+        int32_t echo = echoBuf[echoWr];
+        int32_t out  = s + (int32_t)(echo * 0.4f);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        echoBuf[echoWr] = (int16_t)out;
+        echoWr = (echoWr + 1) % ECHO_LEN;
+        s = out;
+      }
+      else if (fx == 2)  // star fighter ring mod
+      {
+        float mod = sinf(2.0f * 3.14159265f * ringPhase);
+        ringPhase += RING_FREQ / SAMPLE_RATE;
+        if (ringPhase >= 1.0f) ringPhase -= 1.0f;
+        int32_t out = (int32_t)((float)s * mod);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 3)  // tremolo
+      {
+        float env = (1.0f - TREM_DEPTH) + TREM_DEPTH * (0.5f + 0.5f * sinf(2.0f * 3.14159265f * tremPhase));
+        tremPhase += TREM_RATE / SAMPLE_RATE;
+        if (tremPhase >= 1.0f) tremPhase -= 1.0f;
+        int32_t out = (int32_t)((float)s * env);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 4)  // chorus
+      {
+        float lfo = 0.5f + 0.5f * sinf(2.0f * 3.14159265f * chorusPhase);
+        chorusPhase += 0.5f / SAMPLE_RATE;
+        if (chorusPhase >= 1.0f) chorusPhase -= 1.0f;
+        int delaySmp = (int)(0.010f * SAMPLE_RATE + lfo * 0.020f * SAMPLE_RATE);
+        int readIdx  = (chorusWr - delaySmp + CHORUS_LEN) % CHORUS_LEN;
+        int16_t del  = chorusBuf[readIdx];
+        chorusBuf[chorusWr] = (int16_t)s;
+        chorusWr = (chorusWr + 1) % CHORUS_LEN;
+        int32_t out = (int32_t)(0.6f * s + 0.6f * del);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+
+      chunk[i] = applyPlaybackGain((int16_t)s);
+    }
+
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, samplesRead * sizeof(int16_t), &bw, portMAX_DELAY);
+    played += samplesRead;
+
+    if (isJoystickButtonPressed()) break;
+  }
+
+  f.close();
+  if (echoBuf)   free(echoBuf);
+  if (chorusBuf) free(chorusBuf);
+  stopTxAndFlush();
+}
+
 void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
 
   // Block all playback effects if nothing has been recorded yet
-  if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH && item != MENU_LOAD)
+  if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
+      && item != MENU_LOAD && item != MENU_LONG_REC && item != MENU_LONG_PLAY)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -691,6 +938,25 @@ void runMenuAction(int item)
     {
       int slot = showSlotSubMenu("Load");
       if (slot > 0) loadRecording(slot);
+      break;
+    }
+    case MENU_LONG_REC:
+    {
+      g_long_rec_secs = showDurationSubMenu(g_long_rec_secs, 30);
+      char durStr[32];
+      snprintf(durStr, sizeof(durStr), "%ds to flash...", g_long_rec_secs);
+      drawStatus("Long Record", durStr);
+      recordToLittleFS(g_long_rec_secs);
+      break;
+    }
+    case MENU_LONG_PLAY:
+    {
+      int fx = showLongPlayFxSubMenu();
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus" };
+      char status[32];
+      snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
+      drawStatus("Long Play...", status);
+      playFromLittleFSWithEffect(fx);
       break;
     }
     default:
