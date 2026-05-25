@@ -1,8 +1,7 @@
 # VoiceMorpher — ESP32-S3 Audio Effects Project
 
 Turn your voice into something completely different! This project lets you record your voice and apply real-time sound effects like pitch shifting, reverse, echo, stutter, and ring modulation — all controlled with a joystick and displayed on a small screen.
-
-<img width="1200" height="655" alt="voicemorpher_diagram" src="https://github.com/user-attachments/assets/f9d1c7ff-7ec6-4ded-a6cd-30878f4e66e6" />
+<img width="1186" height="577" alt="voicemorpher_diagramming" src="https://github.com/user-attachments/assets/8e7c6fd9-c5b0-4fcc-9130-51b6990499ea" />
 
 
 ---
