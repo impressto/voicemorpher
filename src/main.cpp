@@ -60,6 +60,8 @@ enum MenuItem
   MENU_ALIEN,
   MENU_MONSTER,
   MENU_CHORUS,
+  MENU_SAVE,
+  MENU_LOAD,
   MENU_COUNT
 };
 
@@ -76,7 +78,9 @@ static const char *menuLabels[MENU_COUNT] = {
   "Haunted",
   "Alien",
   "Monster",
-  "Chorus"
+  "Chorus",
+  "Save",
+  "Load"
 };
 
 int currentMenu = 0;
@@ -370,12 +374,135 @@ static int showPassthroughFxSubMenu()
   }
 }
 
+static const char *slotPath(int slot)
+{
+  static const char *paths[3] = { "/rec1.pcm", "/rec2.pcm", "/rec3.pcm" };
+  return (slot >= 1 && slot <= 3) ? paths[slot - 1] : paths[0];
+}
+
+// Returns chosen slot (1–3) or -1 if the user pushes Y to go back.
+static int showSlotSubMenu(const char *action)
+{
+  while (isJoystickButtonPressed()) delay(10);
+  int slot = 1;
+  unsigned long lastMoveMs = 0;
+
+  while (true)
+  {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+    char title[32];
+    snprintf(title, sizeof(title), "%s — slot %d / 3", action, slot);
+    u8g2.drawStr(2, 10, title);
+
+    File f = LittleFS.open(slotPath(slot), "r");
+    char status[32];
+    if (f)
+    {
+      int32_t n = 0;
+      f.read((uint8_t *)&n, sizeof(n));
+      f.close();
+      snprintf(status, sizeof(status), "%ds recording", n / SAMPLE_RATE);
+    }
+    else
+    {
+      snprintf(status, sizeof(status), "empty");
+    }
+    u8g2.drawStr(2, 30, status);
+    u8g2.drawStr(2, 50, "< >: pick   Y: back");
+    char btnLine[32];
+    snprintf(btnLine, sizeof(btnLine), "Btn: %s", action);
+    u8g2.drawStr(2, 62, btnLine);
+    u8g2.sendBuffer();
+
+    int x = readJoystickAxis(JOY_X_PIN);
+    int y = readJoystickAxis(JOY_Y_PIN);
+    unsigned long now = millis();
+
+    if (x != 0 && now - lastMoveMs > 200)
+    {
+      slot += x;
+      if (slot < 1) slot = 3;
+      if (slot > 3) slot = 1;
+      lastMoveMs = now;
+    }
+
+    if (y != 0) return -1;
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return slot;
+    }
+    delay(20);
+  }
+}
+
+static void saveRecording(int slot)
+{
+  if (!LittleFS.begin(true)) { drawStatus("Save failed!", "FS error"); delay(1500); return; }
+
+  const char *path = slotPath(slot);
+  drawStatus("Saving...", path);
+
+  File f = LittleFS.open(path, "w");
+  if (!f) { drawStatus("Save failed!", "Open error"); delay(1500); return; }
+
+  int32_t count = active_sample_count;
+  f.write((uint8_t *)&count, sizeof(count));
+
+  const int CHUNK = 256;
+  for (int i = 0; i < active_sample_count; i += CHUNK)
+  {
+    int n = min(CHUNK, active_sample_count - i);
+    f.write((uint8_t *)(record_buffer + i), n * sizeof(int16_t));
+  }
+  f.close();
+
+  char info[32];
+  snprintf(info, sizeof(info), "%ds -> %s", count / SAMPLE_RATE, path);
+  drawStatus("Saved!", info);
+  delay(1200);
+}
+
+static void loadRecording(int slot)
+{
+  if (!LittleFS.begin(true)) { drawStatus("Load failed!", "FS error"); delay(1500); return; }
+
+  const char *path = slotPath(slot);
+  drawStatus("Loading...", path);
+
+  File f = LittleFS.open(path, "r");
+  if (!f) { drawStatus("Slot empty", "Nothing saved"); delay(1500); return; }
+
+  int32_t count = 0;
+  if (f.read((uint8_t *)&count, sizeof(count)) != sizeof(count) ||
+      count <= 0 || count > SAMPLE_RATE * 10)
+  {
+    f.close(); drawStatus("Load failed!", "Bad file"); delay(1500); return;
+  }
+
+  size_t want = count * sizeof(int16_t);
+  size_t got  = f.read((uint8_t *)record_buffer, want);
+  f.close();
+
+  if (got < want) { drawStatus("Load failed!", "Truncated"); delay(1500); return; }
+
+  active_sample_count = count;
+  g_has_recording = true;
+
+  char info[32];
+  snprintf(info, sizeof(info), "%ds from %s", count / SAMPLE_RATE, path);
+  drawStatus("Loaded!", info);
+  delay(1200);
+}
+
 void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
 
   // Block all playback effects if nothing has been recorded yet
-  if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH)
+  if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH && item != MENU_LOAD)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -552,6 +679,18 @@ void runMenuAction(int item)
         drawStatus("Chorus...", info);
         playChorus(rate, depth);
       }
+      break;
+    }
+    case MENU_SAVE:
+    {
+      int slot = showSlotSubMenu("Save");
+      if (slot > 0) saveRecording(slot);
+      break;
+    }
+    case MENU_LOAD:
+    {
+      int slot = showSlotSubMenu("Load");
+      if (slot > 0) loadRecording(slot);
       break;
     }
     default:
