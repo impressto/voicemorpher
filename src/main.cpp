@@ -117,6 +117,7 @@ void playMonster(float speed, float delaySec, float decay);
 void playChorus(float rate, float depth);
 static int16_t applyPlaybackGain(int16_t sample);
 static void stopTxAndFlush();
+static void playRecordingDoneBlips();
 
 static int readJoystickAxis(int pin)
 {
@@ -284,7 +285,7 @@ static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
 static float s_chorusLevel   = 0.5f;
-static int   g_long_rec_secs = 30;
+static int   g_long_rec_secs = 60;
 static const char *LONG_REC_PATH = "/longrec.pcm";
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
@@ -384,8 +385,8 @@ static int showPassthroughFxSubMenu()
 
 static int showLongPlayFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus" };
-  const int NUM_CHOICES = 5;
+  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up" };
+  const int NUM_CHOICES = 6;
   int sel = 0;
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
@@ -616,6 +617,7 @@ static void recordToLittleFS(int durationSecs)
     if (f2) { f2.seek(0); f2.write((uint8_t *)&written, sizeof(written)); f2.close(); }
   }
 
+  playRecordingDoneBlips();
   char result[32];
   snprintf(result, sizeof(result), "%ds saved", written / SAMPLE_RATE);
   drawStatus("Long rec done!", result);
@@ -637,6 +639,155 @@ static void playFromLittleFSWithEffect(int fx)
   }
   int32_t fileSamples = (f.size() - sizeof(int32_t)) / sizeof(int16_t);
   int32_t totalSamples = min(headerSamples, fileSamples);
+
+  // Pitch Up — granular synthesis, duration-preserving (early return)
+  if (fx == 5)
+  {
+    int32_t played = 0;
+    const int   PB_LEN   = 2048;  // ring buffer (~186ms)
+    const int   PB_GRAIN = 441;   // jump distance (~40ms)
+    const int   PB_FADE  = 48;    // crossfade length
+    const int   PB_GAP   = 100;   // min read-to-write gap
+    const float PB_RATE  = 1.5f;  // pitch factor (1 fifth up)
+
+    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    if (!ring)
+    {
+      // fallback: plain playback
+      int16_t pb[128];
+      while (played < totalSamples)
+      {
+        int32_t rem = totalSamples - played;
+        int n = (int)(rem < 128 ? rem : 128);
+        int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
+        if (got == 0) break;
+        for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
+        played += got;
+        if (isJoystickButtonPressed()) break;
+      }
+      f.close();
+      stopTxAndFlush();
+      return;
+    }
+
+    // File staging
+    const int FS = 128;
+    int16_t   fstage[FS];
+    int       fstageIdx = 0, fstageLen = 0;
+    int32_t   fileConsumed = 0;
+
+    int32_t pitchWPos  = 0;
+    float   pitchRPos  = 0.0f;
+    float   pitchRPos2 = 0.0f;
+    int     pitchFade  = 0;
+
+    // Pre-fill ring buffer before starting output
+    while (pitchWPos < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+    {
+      if (fstageIdx >= fstageLen)
+      {
+        int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+        fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+        fstageIdx = 0;
+        if (fstageLen == 0) break;
+      }
+      ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+      pitchWPos++;
+      fileConsumed++;
+    }
+
+    int16_t outBuf[FS];
+    int     outIdx   = 0;
+    bool    cancelled = false;
+
+    while (played < totalSamples && !cancelled)
+    {
+      // Keep ring buffer filled at least PB_GRAIN + PB_GAP ahead of read pointer
+      while ((pitchWPos - (int)pitchRPos) < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+      {
+        if (fstageIdx >= fstageLen)
+        {
+          int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+          fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+          fstageIdx = 0;
+          if (fstageLen == 0) break;
+        }
+        ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+        pitchWPos++;
+        fileConsumed++;
+      }
+
+      // Generate one output sample with linear interpolation
+      float outF;
+      if (pitchFade > 0)
+      {
+        float alpha = (float)pitchFade / PB_FADE;
+        int i0 = (int)pitchRPos  % PB_LEN;
+        float fr1 = pitchRPos  - floorf(pitchRPos);
+        float s1  = (1.0f - fr1) * ring[i0] + fr1 * ring[(i0 + 1) % PB_LEN];
+        int j0 = (int)pitchRPos2 % PB_LEN;
+        float fr2 = pitchRPos2 - floorf(pitchRPos2);
+        float s2  = (1.0f - fr2) * ring[j0] + fr2 * ring[(j0 + 1) % PB_LEN];
+        outF = (1.0f - alpha) * s1 + alpha * s2;  // old pos fades out
+        pitchRPos2 += PB_RATE;
+        pitchFade--;
+      }
+      else
+      {
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr = pitchRPos - floorf(pitchRPos);
+        outF = (1.0f - fr) * ring[i0] + fr * ring[(i0 + 1) % PB_LEN];
+      }
+
+      pitchRPos += PB_RATE;
+
+      // Jump read pointer back one grain when it catches the write pointer
+      if ((pitchWPos - (int)pitchRPos) < PB_GAP)
+      {
+        pitchRPos2 = pitchRPos;
+        pitchRPos -= (float)PB_GRAIN;
+        pitchFade  = PB_FADE;
+      }
+
+      // Normalize absolute positions periodically to prevent float precision drift
+      if (pitchWPos > PB_LEN * 16)
+      {
+        int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
+        pitchWPos -= sub;
+        pitchRPos  -= (float)sub;
+        pitchRPos2 -= (float)sub;
+      }
+
+      int32_t out = (int32_t)outF;
+      if (out > INT16_MAX) out = INT16_MAX;
+      if (out < INT16_MIN) out = INT16_MIN;
+      outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
+
+      if (outIdx >= FS)
+      {
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+        outIdx = 0;
+        if (isJoystickButtonPressed()) cancelled = true;
+      }
+      played++;
+    }
+
+    if (outIdx > 0)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+
+    free(ring);
+    f.close();
+    stopTxAndFlush();
+    return;
+  }
 
   // Echo: 250ms circular delay buffer (auto-allocated from PSRAM if available)
   const int ECHO_LEN = (int)(0.25f * SAMPLE_RATE);
@@ -942,7 +1093,7 @@ void runMenuAction(int item)
     }
     case MENU_LONG_REC:
     {
-      g_long_rec_secs = showDurationSubMenu(g_long_rec_secs, 30);
+      g_long_rec_secs = showDurationSubMenu(g_long_rec_secs, 60);
       char durStr[32];
       snprintf(durStr, sizeof(durStr), "%ds to flash...", g_long_rec_secs);
       drawStatus("Long Record", durStr);
@@ -952,7 +1103,7 @@ void runMenuAction(int item)
     case MENU_LONG_PLAY:
     {
       int fx = showLongPlayFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus" };
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
       drawStatus("Long Play...", status);
@@ -1208,6 +1359,45 @@ void normalizeRecording(float targetPeak = 0.95f)
   }
 }
 
+static void playRecordingDoneBlips()
+{
+  const float FREQ = 1000.0f;
+  const int BLIP_SAMPLES = (int)(0.08f * SAMPLE_RATE);
+  const int GAP_SAMPLES  = (int)(0.07f * SAMPLE_RATE);
+  const int CHUNK = 64;
+  int16_t chunk[CHUNK];
+
+  for (int blip = 0; blip < 3; ++blip)
+  {
+    for (int s = 0; s < BLIP_SAMPLES; s += CHUNK)
+    {
+      int n = min(CHUNK, BLIP_SAMPLES - s);
+      int fadeStart = (int)(BLIP_SAMPLES * 0.8f);
+      for (int i = 0; i < n; ++i)
+      {
+        float t = (float)(s + i) / SAMPLE_RATE;
+        float env = (s + i >= fadeStart)
+                    ? 1.0f - (float)(s + i - fadeStart) / (BLIP_SAMPLES - fadeStart)
+                    : 1.0f;
+        chunk[i] = (int16_t)(sinf(2.0f * 3.14159265f * FREQ * t) * 16000.0f * env);
+      }
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, n * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+    if (blip < 2)
+    {
+      memset(chunk, 0, sizeof(chunk));
+      for (int s = 0; s < GAP_SAMPLES; s += CHUNK)
+      {
+        int n = min(CHUNK, GAP_SAMPLES - s);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, chunk, n * sizeof(int16_t), &bw, portMAX_DELAY);
+      }
+    }
+  }
+  stopTxAndFlush();
+}
+
 void recordToBuffer()
 {
   const size_t TEMP_SAMPLES = 256;
@@ -1239,6 +1429,7 @@ void recordToBuffer()
   cleanRecording();
   normalizeRecording();
   g_has_recording = true;
+  playRecordingDoneBlips();
 }
 
 void playBufferSimple()
