@@ -1481,11 +1481,12 @@ static void playStartupWav()
 
   // Scan chunks for fmt and data
   bool foundData = false;
+  uint32_t sz = 0;
   uint8_t chunkHdr[8];
   while (f.read(chunkHdr, 8) == 8)
   {
-    uint32_t sz = (uint32_t)chunkHdr[4] | ((uint32_t)chunkHdr[5] << 8) |
-                  ((uint32_t)chunkHdr[6] << 16) | ((uint32_t)chunkHdr[7] << 24);
+    sz = (uint32_t)chunkHdr[4] | ((uint32_t)chunkHdr[5] << 8) |
+         ((uint32_t)chunkHdr[6] << 16) | ((uint32_t)chunkHdr[7] << 24);
     if (chunkHdr[0] == 'f' && chunkHdr[1] == 'm' && chunkHdr[2] == 't')
     {
       uint8_t fmt[16];
@@ -1495,7 +1496,7 @@ static void playStartupWav()
     else if (chunkHdr[0] == 'd' && chunkHdr[1] == 'a' && chunkHdr[2] == 't' && chunkHdr[3] == 'a')
     {
       foundData = true;
-      break;
+      break; // sz holds the data chunk size — used below to limit playback
     }
     else
     {
@@ -1517,8 +1518,10 @@ static void playStartupWav()
 
   int16_t buf[256];
   size_t bytesRead;
-  while ((bytesRead = f.read((uint8_t *)buf, sizeof(buf))) > 0)
+  uint32_t bytesRemaining = sz; // limit to data chunk — stops before trailing metadata
+  while (bytesRemaining > 0 && (bytesRead = f.read((uint8_t *)buf, min((size_t)bytesRemaining, sizeof(buf)))) > 0)
   {
+    bytesRemaining -= bytesRead;
     size_t samples = bytesRead / sizeof(int16_t);
     for (size_t i = 0; i < samples; ++i)
       buf[i] = applyPlaybackGain(buf[i]);
