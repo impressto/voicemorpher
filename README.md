@@ -79,6 +79,7 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 ---
 
 
+<img width="1232" height="1239" alt="mm_1780003214084_en" src="https://github.com/user-attachments/assets/782ab1dc-dfa1-415c-ad37-cccf8895d887" />
 
 
 ## Setting Up
