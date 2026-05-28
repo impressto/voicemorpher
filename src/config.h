@@ -2,7 +2,19 @@
 
 // Set to 0 to silence the startup WAV on boot.
 #ifndef PLAY_STARTUP_WAV
-#define PLAY_STARTUP_WAV 0
+#define PLAY_STARTUP_WAV 1
+#endif
+
+// Maximum gain applied to the startup WAV, regardless of the stored volume level.
+#ifndef STARTUP_WAV_MAX_GAIN
+#define STARTUP_WAV_MAX_GAIN 3.0f
+#endif
+
+// Noise gate threshold for Live FX passthrough (0–32767 scale).
+// Output is silenced when the smoothed input envelope drops below this level,
+// breaking the acoustic feedback loop. Raise if gate triggers on real speech.
+#ifndef PASSTHROUGH_GATE_THRESHOLD
+#define PASSTHROUGH_GATE_THRESHOLD 800.0f
 #endif
 
 // Default playback volume multiplier for MAX98357A output.

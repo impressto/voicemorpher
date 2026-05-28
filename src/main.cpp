@@ -50,10 +50,20 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 enum MenuItem
 {
+  // Root menu items (0 to MENU_ROOT_COUNT-1)
+  MENU_LONG_REC,
   MENU_RECORD,
+  MENU_LONG_PLAY,
   MENU_PLAY,
+  MENU_EFFECTS,
   MENU_PASSTHROUGH,
-  MENU_REVERSE,
+  MENU_SAVE,
+  MENU_LOAD,
+  MENU_VOLUME,
+  MENU_ROOT_COUNT,
+
+  // Effects sub-menu items (MENU_ROOT_COUNT to MENU_COUNT-1)
+  MENU_REVERSE = MENU_ROOT_COUNT,
   MENU_PITCH,
   MENU_ECHO,
   MENU_RINGMOD,
@@ -63,33 +73,31 @@ enum MenuItem
   MENU_ALIEN,
   MENU_MONSTER,
   MENU_CHORUS,
-  MENU_SAVE,
-  MENU_LOAD,
-  MENU_LONG_REC,
-  MENU_LONG_PLAY,
-  MENU_VOLUME,
   MENU_COUNT
 };
 
 static const char *menuLabels[MENU_COUNT] = {
+  // Root menu
+  "Flash Record",
   "Record",
-  "Play raw",
-  "Passthrough",
+  "Flash Play",
+  "Play",
+  "Effects",
+  "Live FX",
+  "Save",
+  "Load",
+  "Volume",
+  // Effects sub-menu
   "Reverse",
   "Pitch",
   "Echo",
-  "Star fighter",
+  "Ring Mod",
   "Stutter",
   "Tremolo",
   "Haunted",
   "Alien",
   "Monster",
-  "Chorus",
-  "Save",
-  "Load",
-  "Long Record",
-  "Long Play",
-  "Volume"
+  "Chorus"
 };
 
 int currentMenu = 0;
@@ -159,7 +167,7 @@ void handleJoystickMenu()
 
   if (y != 0 && now - lastJoystickMoveMs > 200)
   {
-    currentMenu = (currentMenu + MENU_COUNT + (y < 0 ? -1 : 1)) % MENU_COUNT;
+    currentMenu = (currentMenu + MENU_ROOT_COUNT + (y < 0 ? -1 : 1)) % MENU_ROOT_COUNT;
     drawMenu();
     lastJoystickMoveMs = now;
   }
@@ -183,16 +191,16 @@ void drawMenu()
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
 
-  const int visibleCount = 4;
+  const int visibleCount = 5;
   int startIndex = currentMenu - visibleCount / 2;
   if (startIndex < 0) startIndex = 0;
-  if (startIndex > MENU_COUNT - visibleCount)
-    startIndex = MENU_COUNT - visibleCount;
+  if (startIndex > MENU_ROOT_COUNT - visibleCount)
+    startIndex = MENU_ROOT_COUNT - visibleCount;
 
   for (int i = 0; i < visibleCount; ++i)
   {
     int itemIndex = startIndex + i;
-    int y = 14 + i * 12;
+    int y = 11 + i * 12;
 
     if (itemIndex == currentMenu)
     {
@@ -209,11 +217,11 @@ void drawMenu()
 
   if (startIndex > 0)
   {
-    u8g2.drawStr(110, 10, "^");
+    u8g2.drawStr(110, 7, "^");
   }
-  if (startIndex + visibleCount < MENU_COUNT)
+  if (startIndex + visibleCount < MENU_ROOT_COUNT)
   {
-    u8g2.drawStr(110, 58, "v");
+    u8g2.drawStr(110, 63, "v");
   }
 
   u8g2.sendBuffer();
@@ -355,8 +363,8 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
 // Joystick X cycles through live effect choices; button confirms.
 static int showPassthroughFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fighter", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up" };
-  const int NUM_CHOICES = 8;
+  static const char *choices[] = { "Plain", "Echo", "Star Fighter", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up", "Pitch Dn" };
+  const int NUM_CHOICES = 9;
   int sel = 0;
   unsigned long lastMoveMs = 0;
 
@@ -905,6 +913,66 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   stopTxAndFlush();
 }
 
+static int showEffectsSubMenu()
+{
+  static int sel = MENU_ROOT_COUNT;
+  unsigned long lastMoveMs = 0;
+  const int effectCount = MENU_COUNT - MENU_ROOT_COUNT;
+  while (isJoystickButtonPressed()) delay(10);
+
+  while (true)
+  {
+    const int visibleCount = 5;
+    int relSel = sel - MENU_ROOT_COUNT;
+    int startIdx = relSel - visibleCount / 2;
+    if (startIdx < 0) startIdx = 0;
+    if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+
+    for (int i = 0; i < visibleCount; ++i)
+    {
+      int itemEnum = MENU_ROOT_COUNT + startIdx + i;
+      int y = 11 + i * 12;
+      if (itemEnum == sel)
+      {
+        u8g2.drawBox(0, y - 10, 128, 12);
+        u8g2.setDrawColor(0);
+        u8g2.drawStr(2, y, menuLabels[itemEnum]);
+        u8g2.setDrawColor(1);
+      }
+      else
+        u8g2.drawStr(2, y, menuLabels[itemEnum]);
+    }
+
+    if (startIdx > 0) u8g2.drawStr(110, 7, "^");
+    if (startIdx + visibleCount < effectCount) u8g2.drawStr(110, 63, "v");
+    u8g2.drawStr(0, 63, "< back");
+    u8g2.sendBuffer();
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return -1;
+      sel += (y < 0 ? -1 : 1);
+      if (sel < MENU_ROOT_COUNT) sel = MENU_ROOT_COUNT;
+      if (sel >= MENU_COUNT) sel = MENU_COUNT - 1;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return sel;
+    }
+    delay(10);
+  }
+}
+
 void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
@@ -912,7 +980,7 @@ void runMenuAction(int item)
   // Block all playback effects if nothing has been recorded yet
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LOAD && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_VOLUME)
+      && item != MENU_VOLUME && item != MENU_EFFECTS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -938,6 +1006,16 @@ void runMenuAction(int item)
       drawStatus("Playing raw...", nullptr);
       playBufferSimple();
       break;
+    case MENU_EFFECTS:
+    {
+      while (true)
+      {
+        int fx = showEffectsSubMenu();
+        if (fx < 0) break;
+        runMenuAction(fx);
+      }
+      break;
+    }
     case MENU_PASSTHROUGH:
     {
       int fx = showPassthroughFxSubMenu();
@@ -1134,6 +1212,10 @@ void runMenuAction(int item)
         s_volumeLevel = lvl;
         playback_gain = 0.5f + lvl * 9.5f;
         g_prefs.putFloat("vol_gain", playback_gain);
+        char info[32];
+        snprintf(info, sizeof(info), "Gain: %.2fx saved", playback_gain);
+        drawStatus("Volume saved!", info);
+        delay(1000);
       }
       break;
     }
@@ -1282,6 +1364,9 @@ static void playStartupWav()
   drawStatus("Audio test...", "voicemorpher.wav");
   Serial.println("Playing startup WAV...");
 
+  float savedGain = playback_gain;
+  if (playback_gain > STARTUP_WAV_MAX_GAIN) playback_gain = STARTUP_WAV_MAX_GAIN;
+
   int16_t buf[256];
   size_t bytesRead;
   while ((bytesRead = f.read((uint8_t *)buf, sizeof(buf))) > 0)
@@ -1295,6 +1380,7 @@ static void playStartupWav()
 
   f.close();
   stopTxAndFlush();
+  playback_gain = savedGain;
   Serial.println("Startup WAV done.");
 }
 
@@ -1894,16 +1980,20 @@ void passthroughWithEffect(int fx)
   const int   PITCH_FADE_LEN = 48;     // crossfade samples (~4 ms)
   const int   PITCH_GAP      = 48;     // min read-to-write gap before jumping
   const float PITCH_UP       = 1.5f;   // pitch factor (1.5 = one musical fifth higher)
+  const float PITCH_DOWN     = 0.67f;  // pitch factor (0.67 = one musical fifth lower)
   int16_t *pitchRing  = nullptr;
   int32_t  pitchWPos  = 0;
   float    pitchRPos  = -(float)(PITCH_GRAIN * 2);  // start behind; outputs silence until filled
   float    pitchRPos2 = 0.0f;
   int      pitchFade  = 0;
-  if (fx == 7)
+  if (fx == 7 || fx == 8)
   {
     pitchRing = (int16_t *)calloc(PITCH_BUF, sizeof(int16_t));
     if (!pitchRing) fx = 0;
   }
+
+  // Noise gate envelope follower
+  float gateEnv = 0.0f;
 
   // Phase accumulators
   float ringPhase = 0.0f;
@@ -2036,12 +2126,71 @@ void passthroughWithEffect(int fx)
         if (out < INT16_MIN) out = INT16_MIN;
         s = out;
       }
+      else if (fx == 8)  // pitch down — granular, tempo preserved
+      {
+        pitchRing[pitchWPos % PITCH_BUF] = (int16_t)s;
+        pitchWPos++;
+
+        float outF = 0.0f;
+        if (pitchFade > 0)
+        {
+          float alpha = (float)pitchFade / PITCH_FADE_LEN;
+          int p0 = ((int)pitchRPos)  % PITCH_BUF, p1 = (p0 + 1) % PITCH_BUF;
+          float pf = pitchRPos  - floorf(pitchRPos);
+          float s1 = (1.0f - pf) * pitchRing[p0] + pf * pitchRing[p1];
+          int q0 = ((int)pitchRPos2) % PITCH_BUF, q1 = (q0 + 1) % PITCH_BUF;
+          float qf = pitchRPos2 - floorf(pitchRPos2);
+          float s2 = (1.0f - qf) * pitchRing[q0] + qf * pitchRing[q1];
+          outF = (1.0f - alpha) * s1 + alpha * s2;
+          pitchRPos2 += PITCH_DOWN;
+          pitchFade--;
+        }
+        else if (pitchRPos >= 0.0f)
+        {
+          int i0 = ((int)pitchRPos) % PITCH_BUF, i1 = (i0 + 1) % PITCH_BUF;
+          float fr = pitchRPos - floorf(pitchRPos);
+          outF = (1.0f - fr) * pitchRing[i0] + fr * pitchRing[i1];
+        }
+
+        pitchRPos += PITCH_DOWN;
+
+        // Jump read pointer forward when write gets too far ahead
+        if (pitchRPos >= 0.0f && pitchWPos - (int)pitchRPos > PITCH_BUF - PITCH_GAP * 2)
+        {
+          pitchRPos2 = pitchRPos;
+          pitchRPos += (float)PITCH_GRAIN;
+          pitchFade  = PITCH_FADE_LEN;
+          if (pitchWPos > PITCH_BUF * 8)
+          {
+            int sub = (pitchWPos / PITCH_BUF - 4) * PITCH_BUF;
+            pitchWPos -= sub;
+            pitchRPos -= (float)sub;
+            pitchRPos2 -= (float)sub;
+          }
+        }
+
+        int32_t out = (int32_t)outF;
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
 
       int32_t gained = (int32_t)((float)s * playback_gain);
       if (gained > INT16_MAX) gained = INT16_MAX;
       if (gained < INT16_MIN) gained = INT16_MIN;
       chunk[i] = (int16_t)gained;
     }
+
+    // Noise gate: measure input peak, update smoothed envelope, silence output if below threshold
+    float peak = 0.0f;
+    for (size_t i = 0; i < n; ++i)
+    {
+      float a = fabsf((float)chunk[i]);
+      if (a > peak) peak = a;
+    }
+    gateEnv += (peak > gateEnv ? 0.8f : 0.05f) * (peak - gateEnv);
+    if (gateEnv < PASSTHROUGH_GATE_THRESHOLD)
+      memset(chunk, 0, n * sizeof(int16_t));
 
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, bytes_read, &bytes_written, portMAX_DELAY);
