@@ -1,5 +1,10 @@
 #pragma once
 
+// Set to 0 to silence the startup WAV on boot.
+#ifndef PLAY_STARTUP_WAV
+#define PLAY_STARTUP_WAV 0
+#endif
+
 // Default playback volume multiplier for MAX98357A output.
 // Increase this value to make playback louder, but avoid values that clip badly.
 #ifndef DEFAULT_PLAYBACK_GAIN

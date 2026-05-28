@@ -2,8 +2,11 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include "driver/i2s.h"
 #include "config.h"
+
+static Preferences g_prefs;
 
 // Pin definitions (separate pins for each device for easier debugging)
 // INMP441 (microphone - RX)
@@ -64,6 +67,7 @@ enum MenuItem
   MENU_LOAD,
   MENU_LONG_REC,
   MENU_LONG_PLAY,
+  MENU_VOLUME,
   MENU_COUNT
 };
 
@@ -84,7 +88,8 @@ static const char *menuLabels[MENU_COUNT] = {
   "Save",
   "Load",
   "Long Record",
-  "Long Play"
+  "Long Play",
+  "Volume"
 };
 
 int currentMenu = 0;
@@ -211,7 +216,6 @@ void drawMenu()
     u8g2.drawStr(110, 58, "v");
   }
 
-  u8g2.drawStr(0, 62, "Press button to select");
   u8g2.sendBuffer();
 }
 
@@ -285,8 +289,9 @@ static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
 static float s_chorusLevel   = 0.5f;
+// volume: maps [0,1] to gain [0.5, 10.0]; 0.579 ≈ DEFAULT_PLAYBACK_GAIN=6.0
+static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
-static const char *LONG_REC_PATH = "/longrec.pcm";
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
 // Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
@@ -425,8 +430,14 @@ static const char *slotPath(int slot)
   return (slot >= 1 && slot <= 3) ? paths[slot - 1] : paths[0];
 }
 
+static const char *longSlotPath(int slot)
+{
+  static const char *paths[2] = { "/longrec1.pcm", "/longrec2.pcm" };
+  return (slot >= 1 && slot <= 2) ? paths[slot - 1] : paths[0];
+}
+
 // Returns chosen slot (1–3) or -1 if the user pushes Y to go back.
-static int showSlotSubMenu(const char *action)
+static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int maxSlots)
 {
   while (isJoystickButtonPressed()) delay(10);
   int slot = 1;
@@ -437,10 +448,10 @@ static int showSlotSubMenu(const char *action)
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x10_tf);
     char title[32];
-    snprintf(title, sizeof(title), "%s — slot %d / 3", action, slot);
+    snprintf(title, sizeof(title), "%s — slot %d / %d", action, slot, maxSlots);
     u8g2.drawStr(2, 10, title);
 
-    File f = LittleFS.open(slotPath(slot), "r");
+    File f = LittleFS.open(pathFn(slot), "r");
     char status[32];
     if (f)
     {
@@ -467,8 +478,8 @@ static int showSlotSubMenu(const char *action)
     if (x != 0 && now - lastMoveMs > 200)
     {
       slot += x;
-      if (slot < 1) slot = 3;
-      if (slot > 3) slot = 1;
+      if (slot < 1) slot = maxSlots;
+      if (slot > maxSlots) slot = 1;
       lastMoveMs = now;
     }
 
@@ -542,13 +553,13 @@ static void loadRecording(int slot)
   delay(1200);
 }
 
-static void recordToLittleFS(int durationSecs)
+static void recordToLittleFS(int durationSecs, const char *path)
 {
   if (!LittleFS.begin(true)) { drawStatus("FS Error", "LittleFS failed"); delay(1500); return; }
 
   size_t needed = sizeof(int32_t) + (size_t)durationSecs * SAMPLE_RATE * sizeof(int16_t);
   // Remove old recording first so its blocks are counted as free space
-  if (LittleFS.exists(LONG_REC_PATH)) LittleFS.remove(LONG_REC_PATH);
+  if (LittleFS.exists(path)) LittleFS.remove(path);
   size_t avail  = LittleFS.totalBytes() - LittleFS.usedBytes();
   if (avail < needed)
   {
@@ -559,7 +570,7 @@ static void recordToLittleFS(int durationSecs)
     return;
   }
 
-  File f = LittleFS.open(LONG_REC_PATH, "w");
+  File f = LittleFS.open(path, "w");
   if (!f) { drawStatus("File error", "Cannot open"); delay(1500); return; }
 
   int32_t plannedSamples = durationSecs * SAMPLE_RATE;
@@ -613,7 +624,7 @@ static void recordToLittleFS(int durationSecs)
   // Fix the header if we stopped early
   if (written < plannedSamples)
   {
-    File f2 = LittleFS.open(LONG_REC_PATH, "r+");
+    File f2 = LittleFS.open(path, "r+");
     if (f2) { f2.seek(0); f2.write((uint8_t *)&written, sizeof(written)); f2.close(); }
   }
 
@@ -625,11 +636,11 @@ static void recordToLittleFS(int durationSecs)
 }
 
 // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus
-static void playFromLittleFSWithEffect(int fx)
+static void playFromLittleFSWithEffect(int fx, const char *path)
 {
   if (!LittleFS.begin(true)) { drawStatus("FS Error", "LittleFS failed"); delay(1500); return; }
 
-  File f = LittleFS.open(LONG_REC_PATH, "r");
+  File f = LittleFS.open(path, "r");
   if (!f) { drawStatus("No long rec", "Record first"); delay(1500); return; }
 
   int32_t headerSamples = 0;
@@ -900,7 +911,8 @@ void runMenuAction(int item)
 
   // Block all playback effects if nothing has been recorded yet
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
-      && item != MENU_LOAD && item != MENU_LONG_REC && item != MENU_LONG_PLAY)
+      && item != MENU_LOAD && item != MENU_LONG_REC && item != MENU_LONG_PLAY
+      && item != MENU_VOLUME)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -1081,33 +1093,48 @@ void runMenuAction(int item)
     }
     case MENU_SAVE:
     {
-      int slot = showSlotSubMenu("Save");
+      int slot = showSlotSubMenu("Save", slotPath, 3);
       if (slot > 0) saveRecording(slot);
       break;
     }
     case MENU_LOAD:
     {
-      int slot = showSlotSubMenu("Load");
+      int slot = showSlotSubMenu("Load", slotPath, 3);
       if (slot > 0) loadRecording(slot);
       break;
     }
     case MENU_LONG_REC:
     {
+      int slot = showSlotSubMenu("Long Rec", longSlotPath, 2);
+      if (slot < 0) break;
       g_long_rec_secs = showDurationSubMenu(g_long_rec_secs, 60);
       char durStr[32];
       snprintf(durStr, sizeof(durStr), "%ds to flash...", g_long_rec_secs);
       drawStatus("Long Record", durStr);
-      recordToLittleFS(g_long_rec_secs);
+      recordToLittleFS(g_long_rec_secs, longSlotPath(slot));
       break;
     }
     case MENU_LONG_PLAY:
     {
+      int slot = showSlotSubMenu("Long Play", longSlotPath, 2);
+      if (slot < 0) break;
       int fx = showLongPlayFxSubMenu();
       static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
       drawStatus("Long Play...", status);
-      playFromLittleFSWithEffect(fx);
+      playFromLittleFSWithEffect(fx, longSlotPath(slot));
+      break;
+    }
+    case MENU_VOLUME:
+    {
+      float lvl = showLevelSubMenu("Volume", "Gain", s_volumeLevel, 0.5f, 10.0f, "x");
+      if (lvl >= 0.0f)
+      {
+        s_volumeLevel = lvl;
+        playback_gain = 0.5f + lvl * 9.5f;
+        g_prefs.putFloat("vol_gain", playback_gain);
+      }
       break;
     }
     default:
@@ -1255,12 +1282,15 @@ static void playStartupWav()
   drawStatus("Audio test...", "voicemorpher.wav");
   Serial.println("Playing startup WAV...");
 
-  uint8_t buf[512];
+  int16_t buf[256];
   size_t bytesRead;
-  while ((bytesRead = f.read(buf, sizeof(buf))) > 0)
+  while ((bytesRead = f.read((uint8_t *)buf, sizeof(buf))) > 0)
   {
+    size_t samples = bytesRead / sizeof(int16_t);
+    for (size_t i = 0; i < samples; ++i)
+      buf[i] = applyPlaybackGain(buf[i]);
     size_t bytesWritten = 0;
-    i2s_write(I2S_TX_PORT, buf, bytesRead, &bytesWritten, portMAX_DELAY);
+    i2s_write(I2S_TX_PORT, buf, samples * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
   }
 
   f.close();
@@ -2082,8 +2112,18 @@ void setup()
   pinMode(JOY_BTN_PIN, INPUT_PULLUP);
   pinMode(JOY_X_PIN, INPUT);
 
+  g_prefs.begin("voicemorph", false);
+  float savedGain = g_prefs.getFloat("vol_gain", DEFAULT_PLAYBACK_GAIN);
+  playback_gain  = savedGain;
+  s_volumeLevel  = (savedGain - 0.5f) / 9.5f;
+  if (s_volumeLevel < 0.0f) s_volumeLevel = 0.0f;
+  if (s_volumeLevel > 1.0f) s_volumeLevel = 1.0f;
+  Serial.printf("✓ Volume loaded: %.2fx\n", savedGain);
+
   initI2S();
+#if PLAY_STARTUP_WAV
   playStartupWav();
+#endif
   drawMenu();
 
   Serial.println("Ready. Commands:\n r = record  p = play  v = passthrough\n1 = play reverse 2 = pitch up 3 = pitch down 4 = echo 5 = ring mod\n");
