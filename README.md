@@ -78,7 +78,7 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 
 ---
 
-<img width="1500" height="1618" alt="voice-morpher-wiring" src="https://github.com/user-attachments/assets/6d795b01-9822-4f84-8412-a28cf82e8613" />
+
 
 
 ## Setting Up
