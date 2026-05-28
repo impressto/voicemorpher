@@ -398,8 +398,8 @@ static int showPassthroughFxSubMenu()
 
 static int showLongPlayFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up" };
-  const int NUM_CHOICES = 6;
+  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
+  const int NUM_CHOICES = 7;
   int sel = 0;
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
@@ -773,6 +773,154 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
       }
 
       // Normalize absolute positions periodically to prevent float precision drift
+      if (pitchWPos > PB_LEN * 16)
+      {
+        int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
+        pitchWPos -= sub;
+        pitchRPos  -= (float)sub;
+        pitchRPos2 -= (float)sub;
+      }
+
+      int32_t out = (int32_t)outF;
+      if (out > INT16_MAX) out = INT16_MAX;
+      if (out < INT16_MIN) out = INT16_MIN;
+      outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
+
+      if (outIdx >= FS)
+      {
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+        outIdx = 0;
+        if (isJoystickButtonPressed()) cancelled = true;
+      }
+      played++;
+    }
+
+    if (outIdx > 0)
+    {
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+
+    free(ring);
+    f.close();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Pitch Down — granular synthesis, duration-preserving (early return)
+  if (fx == 6)
+  {
+    int32_t played = 0;
+    const int   PB_LEN   = 2048;
+    const int   PB_GRAIN = 441;
+    const int   PB_FADE  = 48;
+    const int   PB_GAP   = 100;
+    const float PB_RATE  = 0.67f;  // pitch factor (1 fifth down)
+
+    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    if (!ring)
+    {
+      int16_t pb[128];
+      while (played < totalSamples)
+      {
+        int32_t rem = totalSamples - played;
+        int n = (int)(rem < 128 ? rem : 128);
+        int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
+        if (got == 0) break;
+        for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
+        played += got;
+        if (isJoystickButtonPressed()) break;
+      }
+      f.close();
+      stopTxAndFlush();
+      return;
+    }
+
+    const int FS = 128;
+    int16_t   fstage[FS];
+    int       fstageIdx = 0, fstageLen = 0;
+    int32_t   fileConsumed = 0;
+
+    int32_t pitchWPos  = 0;
+    float   pitchRPos  = 0.0f;
+    float   pitchRPos2 = 0.0f;
+    int     pitchFade  = 0;
+
+    // Pre-fill ring buffer
+    while (pitchWPos < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+    {
+      if (fstageIdx >= fstageLen)
+      {
+        int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+        fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+        fstageIdx = 0;
+        if (fstageLen == 0) break;
+      }
+      ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+      pitchWPos++;
+      fileConsumed++;
+    }
+
+    int16_t outBuf[FS];
+    int     outIdx   = 0;
+    bool    cancelled = false;
+
+    while (played < totalSamples && !cancelled)
+    {
+      // Consume exactly one file sample per output sample so the gap grows
+      // at (1 - PB_RATE) per step, triggering a forward jump every ~1336 samples.
+      if (fileConsumed < totalSamples)
+      {
+        if (fstageIdx >= fstageLen)
+        {
+          int32_t _rem = totalSamples - fileConsumed;
+          int want = (int)(_rem < FS ? _rem : FS);
+          fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+          fstageIdx = 0;
+        }
+        if (fstageIdx < fstageLen)
+        {
+          ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+          pitchWPos++;
+          fileConsumed++;
+        }
+      }
+
+      float outF;
+      if (pitchFade > 0)
+      {
+        float alpha = (float)pitchFade / PB_FADE;
+        int i0 = (int)pitchRPos  % PB_LEN;
+        float fr1 = pitchRPos  - floorf(pitchRPos);
+        float s1  = (1.0f - fr1) * ring[i0] + fr1 * ring[(i0 + 1) % PB_LEN];
+        int j0 = (int)pitchRPos2 % PB_LEN;
+        float fr2 = pitchRPos2 - floorf(pitchRPos2);
+        float s2  = (1.0f - fr2) * ring[j0] + fr2 * ring[(j0 + 1) % PB_LEN];
+        outF = (1.0f - alpha) * s1 + alpha * s2;
+        pitchRPos2 += PB_RATE;
+        pitchFade--;
+      }
+      else
+      {
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr = pitchRPos - floorf(pitchRPos);
+        outF = (1.0f - fr) * ring[i0] + fr * ring[(i0 + 1) % PB_LEN];
+      }
+
+      pitchRPos += PB_RATE;
+
+      // Jump read pointer forward when write gets too far ahead (gap > half ring)
+      if ((pitchWPos - (int)pitchRPos) > PB_LEN / 2)
+      {
+        pitchRPos2 = pitchRPos;
+        pitchRPos += (float)PB_GRAIN;
+        pitchFade  = PB_FADE;
+      }
+
       if (pitchWPos > PB_LEN * 16)
       {
         int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
@@ -1197,7 +1345,7 @@ void runMenuAction(int item)
       int slot = showSlotSubMenu("Long Play", longSlotPath, 2);
       if (slot < 0) break;
       int fx = showLongPlayFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up" };
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
       drawStatus("Long Play...", status);
