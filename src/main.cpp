@@ -66,7 +66,7 @@ enum MenuItem
   MENU_EFFECTS,
   MENU_PASSTHROUGH,
   MENU_STORAGE,
-  MENU_VOLUME,
+  MENU_SETTINGS,
   MENU_ROOT_COUNT,
 
   // Storage sub-menu items (MENU_ROOT_COUNT to MENU_STORAGE_COUNT-1)
@@ -74,8 +74,13 @@ enum MenuItem
   MENU_LONG_PLAY,
   MENU_STORAGE_COUNT,
 
-  // Effects sub-menu items (MENU_STORAGE_COUNT to MENU_COUNT-1)
-  MENU_REVERSE = MENU_STORAGE_COUNT,
+  // Settings sub-menu items (MENU_STORAGE_COUNT to MENU_SETTINGS_COUNT-1)
+  MENU_VOLUME = MENU_STORAGE_COUNT,
+  MENU_FEEDBACK,
+  MENU_SETTINGS_COUNT,
+
+  // Effects sub-menu items (MENU_SETTINGS_COUNT to MENU_COUNT-1)
+  MENU_REVERSE = MENU_SETTINGS_COUNT,
   MENU_PITCH,
   MENU_ECHO,
   MENU_RINGMOD,
@@ -117,10 +122,13 @@ static const char *menuLabels[] = {
   "Effects",
   "Live FX",
   "Storage",
-  "Volume",
+  "Settings",
   // Storage sub-menu items
   "Stored Rec",
   "Stored Play",
+  // Settings sub-menu items
+  "Volume",
+  "Feedback",
   // Effects sub-menu items
   "Reverse",
   "Pitch",
@@ -522,6 +530,10 @@ static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
 static float s_chorusLevel   = 0.5f;
+// Gate threshold for Live FX feedback suppression (runtime, saved to prefs)
+// Range 0-5000 on raw ADC scale; maps to s_gateLevel 0.0-1.0 for the slider.
+static float g_gate_threshold = PASSTHROUGH_GATE_THRESHOLD;
+static float s_gateLevel      = PASSTHROUGH_GATE_THRESHOLD / 5000.0f;
 // volume: maps [0,1] to gain [0.5, 10.0]; 0.579 ≈ DEFAULT_PLAYBACK_GAIN=6.0
 static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
@@ -1385,11 +1397,81 @@ static int showStorageSubMenu()
   }
 }
 
-static int showEffectsSubMenu()
+static int showSettingsSubMenu()
 {
   static int sel = MENU_STORAGE_COUNT;
   unsigned long lastMoveMs = 0;
-  const int effectCount = MENU_COUNT - MENU_STORAGE_COUNT;
+  const int settingsCount = MENU_SETTINGS_COUNT - MENU_STORAGE_COUNT;
+  while (isJoystickButtonPressed()) delay(10);
+
+  int prevSel = -1;
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < settingsCount; ++i)
+      {
+        int itemEnum = MENU_STORAGE_COUNT + i;
+        int16_t y = i * ITEM_H;
+        uint16_t iconColor;
+        if (itemEnum == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          iconColor = TFT_WHITE;
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          iconColor = 0xDEFB;
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
+        tft.setCursor(28, y + 5);
+        tft.print(menuLabels[itemEnum]);
+      }
+
+      tft.setTextSize(1);
+      tft.setTextColor(COL_GRAY);
+      tft.setCursor(4, settingsCount * ITEM_H + 4);
+      tft.print("< X: back");
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return -1;
+      sel += (y < 0 ? -1 : 1);
+      if (sel < MENU_STORAGE_COUNT) sel = MENU_STORAGE_COUNT;
+      if (sel >= MENU_SETTINGS_COUNT) sel = MENU_SETTINGS_COUNT - 1;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return sel;
+    }
+    delay(10);
+  }
+}
+
+static int showEffectsSubMenu()
+{
+  static int sel = MENU_SETTINGS_COUNT;
+  unsigned long lastMoveMs = 0;
+  const int effectCount = MENU_COUNT - MENU_SETTINGS_COUNT;
   while (isJoystickButtonPressed()) delay(10);
 
   int prevSel2 = -1;
@@ -1400,7 +1482,7 @@ static int showEffectsSubMenu()
     {
       prevSel2 = sel;
       const int visibleCount = 8;
-      int relSel = sel - MENU_STORAGE_COUNT;
+      int relSel = sel - MENU_SETTINGS_COUNT;
       int startIdx = relSel - visibleCount / 2;
       if (startIdx < 0) startIdx = 0;
       if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
@@ -1411,7 +1493,7 @@ static int showEffectsSubMenu()
 
       for (int i = 0; i < visibleCount && (startIdx + i) < effectCount; ++i)
       {
-        int itemEnum = MENU_STORAGE_COUNT + startIdx + i;
+        int itemEnum = MENU_SETTINGS_COUNT + startIdx + i;
         int16_t y = i * ITEM_H;
         uint16_t iconColor;
         if (itemEnum == sel)
@@ -1459,7 +1541,7 @@ static int showEffectsSubMenu()
     {
       if (x < 0) return -1;
       sel += (y < 0 ? -1 : 1);
-      if (sel < MENU_STORAGE_COUNT) sel = MENU_STORAGE_COUNT;
+      if (sel < MENU_SETTINGS_COUNT) sel = MENU_SETTINGS_COUNT;
       if (sel >= MENU_COUNT) sel = MENU_COUNT - 1;
       lastMoveMs = now;
     }
@@ -1480,7 +1562,8 @@ void runMenuAction(int item)
   // Block all playback effects if nothing has been recorded yet
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_VOLUME && item != MENU_EFFECTS && item != MENU_STORAGE)
+      && item != MENU_VOLUME && item != MENU_FEEDBACK
+      && item != MENU_EFFECTS && item != MENU_STORAGE && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -1528,13 +1611,19 @@ void runMenuAction(int item)
       }
       break;
     }
+    case MENU_SETTINGS:
+    {
+      while (true)
+      {
+        int item = showSettingsSubMenu();
+        if (item < 0) break;
+        runMenuAction(item);
+      }
+      break;
+    }
     case MENU_PASSTHROUGH:
     {
       int fx = showPassthroughFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up" };
-      char status[32];
-      snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
-      drawStatus("Passthrough", status);
       passthroughWithEffect(fx);
       drawStatus("Passthrough done", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
@@ -1738,6 +1827,23 @@ void runMenuAction(int item)
         char info[32];
         snprintf(info, sizeof(info), "Gain: %.2fx saved", playback_gain);
         drawStatus("Volume saved!", info);
+        delay(1000);
+      }
+      break;
+    }
+    case MENU_FEEDBACK:
+    {
+      // Controls the noise gate threshold that cuts feedback in Live FX mode.
+      // Higher = gate triggers more aggressively (cuts feedback sooner).
+      float lvl = showLevelSubMenu("Feedback Gate", "Threshold", s_gateLevel, 0.0f, 5000.0f, "");
+      if (lvl >= 0.0f)
+      {
+        s_gateLevel = lvl;
+        g_gate_threshold = lvl * 5000.0f;
+        g_prefs.putFloat("gate_thresh", g_gate_threshold);
+        char info[32];
+        snprintf(info, sizeof(info), "%.0f saved", g_gate_threshold);
+        drawStatus("Gate saved!", info);
         delay(1000);
       }
       break;
@@ -2546,7 +2652,27 @@ void playChorus(float rate, float depth)
 
 void passthroughWithEffect(int fx)
 {
-  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up
+  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up 8=pitch dn
+  static const char *fxNames[] = {
+    "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus",
+    "Distort", "Telephone", "Pitch Up", "Pitch Dn"
+  };
+  const char *fxLabel = (fx >= 0 && fx <= 8) ? fxNames[fx] : "Live FX";
+
+  // Draw oscilloscope screen
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(8, 8);
+  char hdr[32];
+  snprintf(hdr, sizeof(hdr), "Live: %s", fxLabel);
+  tft.print(hdr);
+  tft.drawRect(WF_X, WF_Y, WF_W, WF_H, tft.color565(40, 50, 100));
+  tft.drawFastHLine(WF_X + 1, WF_CY, WF_W - 2, tft.color565(20, 30, 60));
+  int oscCol = 0;
+
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
 
@@ -2794,11 +2920,40 @@ void passthroughWithEffect(int fx)
       if (a > peak) peak = a;
     }
     gateEnv += (peak > gateEnv ? 0.8f : 0.05f) * (peak - gateEnv);
-    if (gateEnv < PASSTHROUGH_GATE_THRESHOLD)
+    if (gateEnv < g_gate_threshold)
       memset(chunk, 0, n * sizeof(int16_t));
 
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, bytes_read, &bytes_written, portMAX_DELAY);
+
+    // Oscilloscope: draw 8 columns per chunk (32 samples each → ~0.9s full sweep)
+    {
+      const int innerW = WF_W - 2;
+      const int SUBCOLS = 8;
+      const int SUB = CHUNK_SAMPLES / SUBCOLS;
+      const uint16_t wfColor  = tft.color565(0, 180, 220);
+      const uint16_t curColor = tft.color565(50, 50, 90);
+      const uint16_t ctrColor = tft.color565(20, 30, 60);
+      for (int c = 0; c < SUBCOLS; ++c)
+      {
+        int subEnd = min((int)n, (c + 1) * SUB);
+        int16_t pk = 0;
+        for (int s = c * SUB; s < subEnd; ++s)
+        {
+          int16_t a = (int16_t)abs(chunk[s]);
+          if (a > pk) pk = a;
+        }
+        int x = WF_X + 1 + oscCol;
+        tft.drawFastVLine(x, WF_Y + 1, WF_H - 2, C_BG);
+        tft.drawPixel(x, WF_CY, ctrColor);
+        int amp = (int)pk * (WF_H / 2 - 2) / 8192;
+        if (amp > WF_H / 2 - 2) amp = WF_H / 2 - 2;
+        if (amp > 0)
+          tft.drawFastVLine(x, WF_CY - amp, amp * 2 + 1, wfColor);
+        oscCol = (oscCol + 1) % innerW;
+        tft.drawFastVLine(WF_X + 1 + oscCol, WF_Y + 1, WF_H - 2, curColor);
+      }
+    }
 
     if (isJoystickButtonPressed() || Serial.available()) break;
   }
@@ -2878,6 +3033,9 @@ void setup()
   if (s_volumeLevel < 0.0f) s_volumeLevel = 0.0f;
   if (s_volumeLevel > 1.0f) s_volumeLevel = 1.0f;
   Serial.printf("✓ Volume loaded: %.2fx\n", savedGain);
+  g_gate_threshold = g_prefs.getFloat("gate_thresh", PASSTHROUGH_GATE_THRESHOLD);
+  s_gateLevel      = g_gate_threshold / 5000.0f;
+  Serial.printf("✓ Gate threshold loaded: %.0f\n", g_gate_threshold);
 
   LittleFS.begin(true);
   if (loadRecordingAuto())

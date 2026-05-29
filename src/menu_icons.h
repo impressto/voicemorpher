@@ -136,6 +136,43 @@ static const uint8_t ICON_CHORUS[] PROGMEM = {
   0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+// Ascending signal bars = Feedback gate icon
+static const uint8_t ICON_FEEDBACK[] PROGMEM = {
+  0x00, 0x00,   // row  0: padding
+  0x00, 0x0E,   // row  1: bar4 top  (cols 12-14)
+  0x00, 0x0E,   // row  2
+  0x00, 0xEE,   // row  3: bar3+4    (cols 8-10, 12-14)
+  0x00, 0xEE,   // row  4
+  0x0E, 0xEE,   // row  5: bar2+3+4  (cols 4-6, 8-10, 12-14)
+  0x0E, 0xEE,   // row  6
+  0xEE, 0xEE,   // row  7: all bars  (cols 0-2, 4-6, 8-10, 12-14)
+  0xEE, 0xEE,   // row  8
+  0xEE, 0xEE,   // row  9
+  0xEE, 0xEE,   // row 10
+  0xEE, 0xEE,   // row 11
+  0xEE, 0xEE,   // row 12
+  0x00, 0x00,   // row 13: padding
+  0x00, 0x00,   // row 14
+  0x00, 0x00,   // row 15
+};
+
+// Three sliders at different positions = Settings icon
+static const uint8_t ICON_SETTINGS[] PROGMEM = {
+  0x00, 0x18,  // slider 1 knob top  (cols 11-12)
+  0xFF, 0xFF,  // slider 1 bar
+  0x00, 0x18,  // slider 1 knob bot
+  0x00, 0x00,
+  0x01, 0x80,  // slider 2 knob top  (cols 7-8, center)
+  0xFF, 0xFF,  // slider 2 bar
+  0x01, 0x80,  // slider 2 knob bot
+  0x00, 0x00,
+  0x18, 0x00,  // slider 3 knob top  (cols 3-4)
+  0xFF, 0xFF,  // slider 3 bar
+  0x18, 0x00,  // slider 3 knob bot
+  0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
 // Stacked disks = Storage/Database icon
 static const uint8_t ICON_STORAGE[] PROGMEM = {
   0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
@@ -151,11 +188,14 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_EFFECTS,     // MENU_EFFECTS
   ICON_LIVE_FX,     // MENU_PASSTHROUGH
   ICON_STORAGE,     // MENU_STORAGE
-  ICON_VOLUME,      // MENU_VOLUME
+  ICON_SETTINGS,    // MENU_SETTINGS
   // Storage sub-menu items (indices 6-7)
   ICON_FLASH_REC,   // MENU_LONG_REC  (Stored Rec)
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY (Stored Play)
-  // Effects sub-menu items (indices 8+)
+  // Settings sub-menu items (indices 8-9)
+  ICON_VOLUME,      // MENU_VOLUME
+  ICON_FEEDBACK,    // MENU_FEEDBACK
+  // Effects sub-menu items (indices 10+)
   ICON_REVERSE,
   ICON_PITCH,
   ICON_ECHO,
