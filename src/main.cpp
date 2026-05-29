@@ -1603,6 +1603,34 @@ static void stopTxAndFlush()
 // Display /splash.raw from LittleFS (320×240 raw RGB565, little-endian uint16_t).
 // LittleFS f.read() is a single block DMA read — avoids the pgm_read_word
 // word-by-word flash cache stall that caused WDT reboots with PROGMEM.
+static void showColorCheck()
+{
+  struct { const char *label; uint16_t color; } swatches[] = {
+    { "RED",     TFT_RED     },
+    { "GREEN",   TFT_GREEN   },
+    { "BLUE",    TFT_BLUE    },
+    { "WHITE",   TFT_WHITE   },
+    { "BLACK",   TFT_BLACK   },
+    { "YELLOW",  TFT_YELLOW  },
+    { "CYAN",    TFT_CYAN    },
+    { "MAGENTA", TFT_MAGENTA },
+  };
+  const int N = sizeof(swatches) / sizeof(swatches[0]);
+  const int blockH = TFT_H / N;
+
+  tft.fillScreen(TFT_BLACK);
+  for (int i = 0; i < N; ++i) {
+    int y = i * blockH;
+    tft.fillRect(0, y, TFT_W, blockH, swatches[i].color);
+    uint16_t textColor = (swatches[i].color == TFT_BLACK || swatches[i].color == TFT_BLUE) ? TFT_WHITE : TFT_BLACK;
+    tft.setTextColor(textColor);
+    tft.setTextSize(2);
+    tft.setCursor(8, y + (blockH - 16) / 2);
+    tft.print(swatches[i].label);
+  }
+  delay(5000);
+}
+
 static void showSplash()
 {
   File f = LittleFS.open("/splash.raw", "r");
