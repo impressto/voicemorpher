@@ -1,6 +1,7 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <U8g2lib.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 #include "driver/i2s.h"
@@ -20,9 +21,17 @@ static Preferences g_prefs;
 #define I2S_TX_SD 38      // DIN (data in)
 #define AMP_SD 21         // amplifier shutdown/enable pin (AMP_SD)
 
-// OLED display pins (I2C)
-#define DISPLAY_SDA 18
-#define DISPLAY_SCL 16
+// ST7789V TFT display pins (SPI)
+#define TFT_SCLK  12
+#define TFT_MOSI  11
+#define TFT_CS    10
+#define TFT_DC     9
+#define TFT_RST   13
+#define TFT_BL     8
+#define TFT_W    320   // logical width after setRotation(1)
+#define TFT_H    240   // logical height after setRotation(1)
+#define ITEM_H    26   // menu row height (9 × 26 = 234 fits in 240px)
+#define COL_GRAY 0x7BEF
 
 // Joystick pins
 #define JOY_X_PIN 17
@@ -46,7 +55,7 @@ static bool g_has_recording = false;
 float playback_gain = DEFAULT_PLAYBACK_GAIN; // adjust default volume in src/config.h
   
 // Menu and UI
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 
 enum MenuItem
 {
@@ -186,55 +195,126 @@ void handleJoystickMenu()
   }
 }
 
+// ── Gradient helpers ────────────────────────────────────────────────────────
+
+// Top→bottom gradient fill over a rectangle
+static void fillGradH(int16_t x, int16_t y, int16_t w, int16_t h,
+                       uint8_t r1, uint8_t g1, uint8_t b1,
+                       uint8_t r2, uint8_t g2, uint8_t b2)
+{
+  for (int16_t i = 0; i < h; ++i)
+  {
+    float t = (h > 1) ? (float)i / (h - 1) : 0.0f;
+    uint8_t r = (uint8_t)(r1 + ((int16_t)r2 - r1) * t);
+    uint8_t g = (uint8_t)(g1 + ((int16_t)g2 - g1) * t);
+    uint8_t b = (uint8_t)(b1 + ((int16_t)b2 - b1) * t);
+    tft.drawFastHLine(x, y + i, w, tft.color565(r, g, b));
+  }
+}
+
+// Left→right gradient fill over a rectangle
+static void fillGradV(int16_t x, int16_t y, int16_t w, int16_t h,
+                       uint8_t r1, uint8_t g1, uint8_t b1,
+                       uint8_t r2, uint8_t g2, uint8_t b2)
+{
+  for (int16_t i = 0; i < w; ++i)
+  {
+    float t = (w > 1) ? (float)i / (w - 1) : 0.0f;
+    uint8_t r = (uint8_t)(r1 + ((int16_t)r2 - r1) * t);
+    uint8_t g = (uint8_t)(g1 + ((int16_t)g2 - g1) * t);
+    uint8_t b = (uint8_t)(b1 + ((int16_t)b2 - b1) * t);
+    tft.drawFastVLine(x + i, y, h, tft.color565(r, g, b));
+  }
+}
+
+static const uint16_t C_BG = 0x0821; // dark navy background
+
+// Colored header bar with white title (y 0–36, separator line at y=36)
+static void drawHeader(const char *title)
+{
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.fillRect(0, 0, 4, 36, ST77XX_CYAN);
+  tft.drawFastHLine(0, 36, TFT_W, ST77XX_CYAN);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.print(title);
+}
+
+// Gray hint text at the bottom of a sub-menu screen
+static void drawHints(const char *line1, const char *line2 = nullptr)
+{
+  int16_t hy = TFT_H - (line2 ? 34 : 20);
+  tft.fillRect(0, hy - 4, TFT_W, TFT_H - (hy - 4), C_BG);
+  tft.drawFastHLine(0, hy - 5, TFT_W, tft.color565(25, 30, 65));
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY);
+  tft.setCursor(4, hy);
+  tft.print(line1);
+  if (line2)
+  {
+    tft.setCursor(4, hy + 14);
+    tft.print(line2);
+  }
+}
+
+// Progress bar with rounded frame and green→yellow gradient fill
+static void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h, float level)
+{
+  tft.drawRoundRect(x, y, w, h, 3, ST77XX_WHITE);
+  tft.fillRoundRect(x + 1, y + 1, w - 2, h - 2, 2, tft.color565(12, 15, 38));
+  int16_t fw = (int16_t)(level * (w - 2));
+  if (fw > 0)
+    fillGradV(x + 1, y + 1, fw, h - 2, 0, 210, 100, 200, 200, 0);
+}
+
+// ── Main menu ────────────────────────────────────────────────────────────────
+
 void drawMenu()
 {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tf);
+  tft.fillScreen(C_BG);
+  tft.setTextSize(2);
 
-  const int visibleCount = 5;
-  int startIndex = currentMenu - visibleCount / 2;
-  if (startIndex < 0) startIndex = 0;
-  if (startIndex > MENU_ROOT_COUNT - visibleCount)
-    startIndex = MENU_ROOT_COUNT - visibleCount;
-
-  for (int i = 0; i < visibleCount; ++i)
+  // All 9 root items fit (9 × 26 = 234px < 240px)
+  for (int i = 0; i < MENU_ROOT_COUNT; ++i)
   {
-    int itemIndex = startIndex + i;
-    int y = 11 + i * 12;
-
-    if (itemIndex == currentMenu)
+    int16_t y = i * ITEM_H;
+    if (i == currentMenu)
     {
-      u8g2.drawBox(0, y - 10, 128, 12);
-      u8g2.setDrawColor(0);
-      u8g2.drawStr(2, y, menuLabels[itemIndex]);
-      u8g2.setDrawColor(1);
+      // Teal→dark-teal gradient selection bar with cyan left accent stripe
+      fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+      tft.fillRect(0, y, 4, ITEM_H - 1, ST77XX_CYAN);
+      tft.setTextColor(ST77XX_WHITE);
     }
     else
     {
-      u8g2.drawStr(2, y, menuLabels[itemIndex]);
+      // Subtle alternating row colors
+      uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+      tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+      tft.setTextColor(0xDEFB); // slightly off-white
     }
+    // Faint row separator
+    tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+    tft.setCursor(10, y + 5);
+    tft.print(menuLabels[i]);
   }
-
-  if (startIndex > 0)
-  {
-    u8g2.drawStr(110, 7, "^");
-  }
-  if (startIndex + visibleCount < MENU_ROOT_COUNT)
-  {
-    u8g2.drawStr(110, 63, "v");
-  }
-
-  u8g2.sendBuffer();
 }
 
 void drawStatus(const char *line1, const char *line2)
 {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(0, 16, line1);
+  tft.fillScreen(C_BG);
+  // Thin accent strip at top
+  fillGradH(0, 0, TFT_W, 4, 0, 200, 220, 0, 80, 150);
+  tft.setTextColor(ST77XX_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(4, 90);
+  tft.print(line1);
   if (line2)
-    u8g2.drawStr(0, 32, line2);
-  u8g2.sendBuffer();
+  {
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setCursor(4, 120);
+    tft.print(line2);
+  }
 }
 
 // Shows a sub-menu to select recording duration (1 to maxSecs seconds).
@@ -244,26 +324,31 @@ static int showDurationSubMenu(int currentSecs, int maxSecs = g_max_record_secs)
   int secs = currentSecs < 1 ? 1 : (currentSecs > maxSecs ? maxSecs : currentSecs);
   unsigned long lastMoveMs = 0;
 
+  const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+  int prevSecs = -1;
+
+  // Static parts drawn once
+  tft.fillScreen(C_BG);
+  drawHeader("Record Duration");
+  drawHints("< X: adjust >", "Btn: record");
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, "Record Duration");
+    // Only redraw bar + value when duration changes
+    if (secs != prevSecs)
+    {
+      prevSecs = secs;
+      float lvl = (maxSecs > 1) ? (float)(secs - 1) / (maxSecs - 1) : 1.0f;
+      drawProgressBar(BX, BY, BW, BH, lvl);
 
-    const int BX = 2, BY = 16, BW = 124, BH = 10;
-    u8g2.drawFrame(BX, BY, BW, BH);
-    int filled = maxSecs > 1
-                   ? (int)((float)(secs - 1) / (maxSecs - 1) * (BW - 2))
-                   : BW - 2;
-    if (filled > 0)
-      u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
-
-    char valBuf[32];
-    snprintf(valBuf, sizeof(valBuf), "Duration: %ds", secs);
-    u8g2.drawStr(2, 38, valBuf);
-    u8g2.drawStr(2, 50, "< X: adjust >");
-    u8g2.drawStr(2, 62, "Btn: record");
-    u8g2.sendBuffer();
+      tft.fillRect(BX, BY + BH + 8, BW, 22, C_BG);
+      char valBuf[32];
+      snprintf(valBuf, sizeof(valBuf), "Duration: %ds", secs);
+      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(BX, BY + BH + 10);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     unsigned long now = millis();
@@ -311,30 +396,34 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
 
+  const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+  float prevLevel = -1.0f;
+
+  // Static parts drawn once
+  tft.fillScreen(C_BG);
+  drawHeader(title);
+  drawHints("< >: adjust   Y: back", "Btn: play");
+
   while (true)
   {
-    float actualVal = minVal + level * (maxVal - minVal);
+    // Only redraw bar + value when level changes
+    if (level != prevLevel)
+    {
+      prevLevel = level;
+      float actualVal = minVal + level * (maxVal - minVal);
+      drawProgressBar(BX, BY, BW, BH, level);
 
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, title);
-
-    // Filled progress bar
-    const int BX = 2, BY = 16, BW = 124, BH = 10;
-    u8g2.drawFrame(BX, BY, BW, BH);
-    int filled = (int)(level * (BW - 2));
-    if (filled > 0)
-      u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
-
-    char valBuf[32];
-    if (unit[0] == 'x')
-      snprintf(valBuf, sizeof(valBuf), "%s: %.2f%s", paramLabel, actualVal, unit);
-    else
-      snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
-    u8g2.drawStr(2, 38, valBuf);
-    u8g2.drawStr(2, 50, "< >:adjust  Y:back");
-    u8g2.drawStr(2, 62, "Btn: play");
-    u8g2.sendBuffer();
+      tft.fillRect(BX, BY + BH + 8, BW, 22, C_BG);
+      char valBuf[32];
+      if (unit[0] == 'x')
+        snprintf(valBuf, sizeof(valBuf), "%s: %.2f%s", paramLabel, actualVal, unit);
+      else
+        snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
+      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(BX, BY + BH + 10);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     int y = readJoystickAxis(JOY_Y_PIN);
@@ -368,17 +457,27 @@ static int showPassthroughFxSubMenu()
   int sel = 0;
   unsigned long lastMoveMs = 0;
 
+  int prevSel = -1;
+  tft.fillScreen(C_BG);
+  drawHeader("Passthrough FX");
+  drawHints("< X: choose >", "Btn: start");
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, "Passthrough FX");
-    char valBuf[32];
-    snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
-    u8g2.drawStr(2, 30, valBuf);
-    u8g2.drawStr(2, 50, "< X: choose >");
-    u8g2.drawStr(2, 62, "Btn: start");
-    u8g2.sendBuffer();
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillRect(4, 50, TFT_W - 8, 22, C_BG);
+      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(8, 100);
+      char valBuf[32];
+      snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
+      // Fill old text area, then draw new
+      tft.fillRect(4, 90, TFT_W - 8, 22, C_BG);
+      tft.setCursor(8, 90);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     unsigned long now = millis();
@@ -404,17 +503,24 @@ static int showLongPlayFxSubMenu()
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
 
+  int prevSel = -1;
+  tft.fillScreen(C_BG);
+  drawHeader("Long Play FX");
+  drawHints("< X: choose >", "Btn: play");
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, "Long Play FX");
-    char valBuf[32];
-    snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
-    u8g2.drawStr(2, 30, valBuf);
-    u8g2.drawStr(2, 50, "< X: choose >");
-    u8g2.drawStr(2, 62, "Btn: play");
-    u8g2.sendBuffer();
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillRect(4, 90, TFT_W - 8, 22, C_BG);
+      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(8, 90);
+      char valBuf[32];
+      snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     unsigned long now = millis();
@@ -451,33 +557,49 @@ static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int m
   int slot = 1;
   unsigned long lastMoveMs = 0;
 
+  int prevSlot = -1;
+  char hdrBuf[32];
+  snprintf(hdrBuf, sizeof(hdrBuf), "%s  1/%d", action, maxSlots);
+
+  tft.fillScreen(C_BG);
+  drawHeader(hdrBuf);
+  char btnLine[32];
+  snprintf(btnLine, sizeof(btnLine), "Btn: %s", action);
+  drawHints("< >: pick   Y: back", btnLine);
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    char title[32];
-    snprintf(title, sizeof(title), "%s — slot %d / %d", action, slot, maxSlots);
-    u8g2.drawStr(2, 10, title);
+    if (slot != prevSlot)
+    {
+      prevSlot = slot;
+      // Update header slot number
+      snprintf(hdrBuf, sizeof(hdrBuf), "%s  %d/%d", action, slot, maxSlots);
+      fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+      tft.fillRect(0, 0, 4, 36, ST77XX_CYAN);
+      tft.setTextColor(ST77XX_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(10, 10);
+      tft.print(hdrBuf);
 
-    File f = LittleFS.open(pathFn(slot), "r");
-    char status[32];
-    if (f)
-    {
-      int32_t n = 0;
-      f.read((uint8_t *)&n, sizeof(n));
-      f.close();
-      snprintf(status, sizeof(status), "%ds recording", n / SAMPLE_RATE);
+      File f = LittleFS.open(pathFn(slot), "r");
+      char status[32];
+      if (f)
+      {
+        int32_t n = 0;
+        f.read((uint8_t *)&n, sizeof(n));
+        f.close();
+        snprintf(status, sizeof(status), "%ds recording", n / SAMPLE_RATE);
+      }
+      else
+      {
+        snprintf(status, sizeof(status), "empty");
+      }
+      tft.fillRect(4, 50, TFT_W - 8, 22, C_BG);
+      tft.setTextColor(ST77XX_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(8, 60);
+      tft.print(status);
     }
-    else
-    {
-      snprintf(status, sizeof(status), "empty");
-    }
-    u8g2.drawStr(2, 30, status);
-    u8g2.drawStr(2, 50, "< >: pick   Y: back");
-    char btnLine[32];
-    snprintf(btnLine, sizeof(btnLine), "Btn: %s", action);
-    u8g2.drawStr(2, 62, btnLine);
-    u8g2.sendBuffer();
 
     int x = readJoystickAxis(JOY_X_PIN);
     int y = readJoystickAxis(JOY_Y_PIN);
@@ -595,18 +717,19 @@ static void recordToLittleFS(int durationSecs, const char *path)
     if (written % (SAMPLE_RATE / 2) < STAGE)
     {
       int elapsed = (int)(written / SAMPLE_RATE);
-      u8g2.clearBuffer();
-      u8g2.setFont(u8g2_font_6x10_tf);
-      u8g2.drawStr(2, 10, "Long Record");
-      const int BX = 2, BY = 16, BW = 124, BH = 10;
-      u8g2.drawFrame(BX, BY, BW, BH);
-      int filled = (int)((float)written / plannedSamples * (BW - 2));
-      if (filled > 0) u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
-      char timeBuf[32];
-      snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
-      u8g2.drawStr(2, 38, timeBuf);
-      u8g2.drawStr(2, 62, "Btn: stop early");
-      u8g2.sendBuffer();
+      {
+        const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+        tft.fillScreen(C_BG);
+        drawHeader("Long Record");
+        drawProgressBar(BX, BY, BW, BH, (float)written / plannedSamples);
+        char timeBuf[32];
+        snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
+        tft.setTextColor(ST77XX_CYAN);
+        tft.setTextSize(2);
+        tft.setCursor(BX, BY + BH + 10);
+        tft.print(timeBuf);
+        drawHints("Btn: stop early");
+      }
     }
 
     int toRead = min((int32_t)STAGE, plannedSamples - written);
@@ -1068,36 +1191,64 @@ static int showEffectsSubMenu()
   const int effectCount = MENU_COUNT - MENU_ROOT_COUNT;
   while (isJoystickButtonPressed()) delay(10);
 
+  int prevSel2 = -1;
+
   while (true)
   {
-    const int visibleCount = 5;
-    int relSel = sel - MENU_ROOT_COUNT;
-    int startIdx = relSel - visibleCount / 2;
-    if (startIdx < 0) startIdx = 0;
-    if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
-
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-
-    for (int i = 0; i < visibleCount; ++i)
+    if (sel != prevSel2)
     {
-      int itemEnum = MENU_ROOT_COUNT + startIdx + i;
-      int y = 11 + i * 12;
-      if (itemEnum == sel)
-      {
-        u8g2.drawBox(0, y - 10, 128, 12);
-        u8g2.setDrawColor(0);
-        u8g2.drawStr(2, y, menuLabels[itemEnum]);
-        u8g2.setDrawColor(1);
-      }
-      else
-        u8g2.drawStr(2, y, menuLabels[itemEnum]);
-    }
+      prevSel2 = sel;
+      const int visibleCount = 8;
+      int relSel = sel - MENU_ROOT_COUNT;
+      int startIdx = relSel - visibleCount / 2;
+      if (startIdx < 0) startIdx = 0;
+      if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
+      if (startIdx < 0) startIdx = 0;
 
-    if (startIdx > 0) u8g2.drawStr(110, 7, "^");
-    if (startIdx + visibleCount < effectCount) u8g2.drawStr(110, 63, "v");
-    u8g2.drawStr(0, 63, "< back");
-    u8g2.sendBuffer();
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < visibleCount && (startIdx + i) < effectCount; ++i)
+      {
+        int itemEnum = MENU_ROOT_COUNT + startIdx + i;
+        int16_t y = i * ITEM_H;
+        if (itemEnum == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, ST77XX_CYAN);
+          tft.setTextColor(ST77XX_WHITE);
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.setCursor(10, y + 5);
+        tft.print(menuLabels[itemEnum]);
+      }
+
+      // Scroll arrows
+      if (startIdx > 0)
+      {
+        tft.setTextColor(ST77XX_CYAN);
+        tft.setTextSize(1);
+        tft.setCursor(TFT_W - 10, 2);
+        tft.print("^");
+      }
+      if (startIdx + visibleCount < effectCount)
+      {
+        tft.setTextColor(ST77XX_CYAN);
+        tft.setTextSize(1);
+        tft.setCursor(TFT_W - 10, visibleCount * ITEM_H - 8);
+        tft.print("v");
+      }
+      tft.setTextSize(1);
+      tft.setTextColor(COL_GRAY);
+      tft.setCursor(4, visibleCount * ITEM_H + 4);
+      tft.print("< X: back");
+    }
 
     int y = readJoystickAxis(JOY_Y_PIN);
     int x = readJoystickAxis(JOY_X_PIN);
@@ -1456,6 +1607,27 @@ static void stopTxAndFlush()
   i2s_start(I2S_TX_PORT);
 }
 
+// Display /splash.raw from LittleFS (320×240 raw RGB565, little-endian uint16_t).
+// LittleFS f.read() is a single block DMA read — avoids the pgm_read_word
+// word-by-word flash cache stall that caused WDT reboots with PROGMEM.
+static void showSplash()
+{
+  File f = LittleFS.open("/splash.raw", "r");
+  if (!f) return;
+
+  uint16_t rowBuf[TFT_W];
+  tft.startWrite();
+  tft.setAddrWindow(0, 0, TFT_W, TFT_H);
+  for (int row = 0; row < TFT_H; ++row)
+  {
+    if (f.read((uint8_t *)rowBuf, TFT_W * 2) != TFT_W * 2) break;
+    tft.writePixels(rowBuf, TFT_W);
+    if ((row & 31) == 31) yield();
+  }
+  tft.endWrite();
+  f.close();
+}
+
 static void playStartupWav()
 {
   if (!LittleFS.begin(true))
@@ -1510,7 +1682,7 @@ static void playStartupWav()
     f.close(); return;
   }
 
-  drawStatus("Audio test...", "voicemorpher.wav");
+  showSplash();
   Serial.println("Playing startup WAV...");
 
   float savedGain = playback_gain;
@@ -2407,8 +2579,14 @@ void setup()
   digitalWrite(AMP_SD, HIGH);
   Serial.printf("✓ AMP_SD enabled on GPIO%d\n", AMP_SD);
 
-  Wire.begin(DISPLAY_SDA, DISPLAY_SCL);
-  u8g2.begin();
+  SPI.begin(TFT_SCLK, -1, TFT_MOSI);
+  tft.init(240, 320);
+  tft.setRotation(1);  // landscape (clockwise from portrait)
+  tft.fillScreen(C_BG);
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+  Serial.println("✓ ST7789V TFT initialized (240x320)");
+
   pinMode(JOY_BTN_PIN, INPUT_PULLUP);
   pinMode(JOY_X_PIN, INPUT);
 

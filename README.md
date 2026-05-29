@@ -26,7 +26,7 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 | INMP441 microphone module | Captures your voice as a digital signal |
 | MAX98357A amplifier module | Drives the speaker from a digital signal |
 | Small speaker (4–8 Ω) | Makes the sound you can hear |
-| SSD1306 OLED display (128×64) | Shows the menu on screen |
+| ST7789V TFT display (240×320) | Shows the menu on screen |
 | Analog joystick module | Navigates the menu and adjusts effects |
 | Breadboard + jumper wires | Connects everything together |
 | USB cable | Powers the board and uploads code |
@@ -57,14 +57,18 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 | VIN | 5V | Power (use 5V for best volume) |
 | GND | GND | Ground |
 
-### 🖥️ SSD1306 OLED Display → ESP32-S3 (I2C)
+### 🖥️ ST7789V TFT Display → ESP32-S3 (SPI)
 
-| Display Pin | ESP32-S3 Pin |
-|-------------|--------------|
-| SDA | GPIO 18 |
-| SCL | GPIO 16 |
-| VCC | 3.3V |
-| GND | GND |
+| Display Pin | ESP32-S3 Pin | What it does |
+|-------------|--------------|--------------|
+| VCC | 3.3V | Power |
+| GND | GND | Ground |
+| SCL / SCK / CLK | GPIO 12 | SPI clock |
+| SDA / MOSI / DIN | GPIO 11 | SPI data |
+| CS | GPIO 10 | Chip select |
+| DC / A0 | GPIO 9 | Data / command select |
+| RST / RES | GPIO 13 | Reset |
+| BL / LED | GPIO 8 | Backlight enable |
 
 ### 🕹️ Analog Joystick → ESP32-S3
 
@@ -197,7 +201,7 @@ Once you're comfortable with this project, here are some ideas to explore:
 
 | Problem | Try this |
 |---------|----------|
-| Nothing on the display | Check SDA/SCL wiring and that the display is getting 3.3V |
+| Nothing on the display | Check SCL/MOSI/CS/DC wiring, that BL (GPIO 8) is HIGH, and that VCC is 3.3V |
 | No sound from speaker | Check AMP_SD is connected to GPIO 21 and the pin is HIGH |
 | Recording sounds distorted | Make sure the microphone L/R pin is connected to GND |
 | Upload fails | Hold the BOOT button while clicking upload |
