@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include "menu_icons.h"
 #include <LittleFS.h>
 using namespace fs;
 #include <Preferences.h>
@@ -78,9 +79,30 @@ enum MenuItem
   MENU_COUNT
 };
 
+// FontAwesome 4.x glyph codepoints encoded as UTF-8 literals
+#define FA_BOLT      "\xEF\x83\xA7"  // U+F0E7
+#define FA_MIC       "\xEF\x84\xB0"  // U+F130
+#define FA_PLAY      "\xEF\x81\x8B"  // U+F04B
+#define FA_MAGIC     "\xEF\x83\x90"  // U+F0D0
+#define FA_PHONES    "\xEF\x80\xA5"  // U+F025
+#define FA_SAVE      "\xEF\x83\x87"  // U+F0C7
+#define FA_FOLDER    "\xEF\x81\xBC"  // U+F07C
+#define FA_VOLUME    "\xEF\x80\xA8"  // U+F028
+#define FA_BACK      "\xEF\x81\x8A"  // U+F04A
+#define FA_MUSIC     "\xEF\x80\x81"  // U+F001
+#define FA_ARROWS    "\xEF\x81\x87"  // U+F047
+#define FA_CIRCLE    "\xEF\x84\x8C"  // U+F10C
+#define FA_FFWD      "\xEF\x81\x90"  // U+F050
+#define FA_BARCHART  "\xEF\x82\x80"  // U+F080
+#define FA_MOON      "\xEF\x86\x86"  // U+F186
+#define FA_ROCKET    "\xEF\x84\xB5"  // U+F135
+#define FA_BUG       "\xEF\x86\x88"  // U+F188
+#define FA_GROUP     "\xEF\x83\x80"  // U+F0C0
+#define FA_UP        "\xEF\x81\xB7"  // U+F077
+#define FA_DOWN      "\xEF\x81\xB8"  // U+F078
+
 static const char *menuLabels[MENU_COUNT] = {
-  // Root menu
-  "Flash Record",
+  "Flash Rec",
   "Record",
   "Flash Play",
   "Play",
@@ -89,7 +111,6 @@ static const char *menuLabels[MENU_COUNT] = {
   "Save",
   "Load",
   "Volume",
-  // Effects sub-menu
   "Reverse",
   "Pitch",
   "Echo",
@@ -99,7 +120,7 @@ static const char *menuLabels[MENU_COUNT] = {
   "Haunted",
   "Alien",
   "Monster",
-  "Chorus"
+  "Chorus",
 };
 
 int currentMenu = 0;
@@ -268,27 +289,27 @@ void drawMenu()
   tft.fillScreen(C_BG);
   tft.setTextSize(2);
 
-  // All 9 root items fit (9 × 26 = 234px < 240px)
   for (int i = 0; i < MENU_ROOT_COUNT; ++i)
   {
     int16_t y = i * ITEM_H;
+    uint16_t iconColor;
     if (i == currentMenu)
     {
-      // Teal→dark-teal gradient selection bar with cyan left accent stripe
       fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
       tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
       tft.setTextColor(TFT_WHITE);
+      iconColor = TFT_WHITE;
     }
     else
     {
-      // Subtle alternating row colors
       uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
       tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
-      tft.setTextColor(0xDEFB); // slightly off-white
+      tft.setTextColor(0xDEFB);
+      iconColor = 0xDEFB;
     }
-    // Faint row separator
     tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
-    tft.setCursor(10, y + 5);
+    tft.drawBitmap(6, y + 5, MENU_ICONS[i], 16, 16, iconColor);
+    tft.setCursor(28, y + 5);
     tft.print(menuLabels[i]);
   }
 }
@@ -1205,37 +1226,37 @@ static int showEffectsSubMenu()
       {
         int itemEnum = MENU_ROOT_COUNT + startIdx + i;
         int16_t y = i * ITEM_H;
+        uint16_t iconColor;
         if (itemEnum == sel)
         {
           fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
           tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
           tft.setTextColor(TFT_WHITE);
+          iconColor = TFT_WHITE;
         }
         else
         {
           uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
           tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
           tft.setTextColor(0xDEFB);
+          iconColor = 0xDEFB;
         }
         tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
-        tft.setCursor(10, y + 5);
+        tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
+        tft.setCursor(28, y + 5);
         tft.print(menuLabels[itemEnum]);
       }
 
-      // Scroll arrows
+      // Scroll indicators
       if (startIdx > 0)
       {
-        tft.setTextColor(TFT_CYAN);
-        tft.setTextSize(1);
-        tft.setCursor(TFT_W - 10, 2);
-        tft.print("^");
+        tft.setTextColor(TFT_CYAN); tft.setTextSize(1);
+        tft.setCursor(TFT_W - 10, 2);  tft.print("^");
       }
       if (startIdx + visibleCount < effectCount)
       {
-        tft.setTextColor(TFT_CYAN);
-        tft.setTextSize(1);
-        tft.setCursor(TFT_W - 10, visibleCount * ITEM_H - 8);
-        tft.print("v");
+        tft.setTextColor(TFT_CYAN); tft.setTextSize(1);
+        tft.setCursor(TFT_W - 10, visibleCount * ITEM_H - 8); tft.print("v");
       }
       tft.setTextSize(1);
       tft.setTextColor(COL_GRAY);
@@ -2617,6 +2638,8 @@ void setup()
   if (s_volumeLevel < 0.0f) s_volumeLevel = 0.0f;
   if (s_volumeLevel > 1.0f) s_volumeLevel = 1.0f;
   Serial.printf("✓ Volume loaded: %.2fx\n", savedGain);
+
+  LittleFS.begin(true);
 
   initI2S();
 #if PLAY_STARTUP_WAV
