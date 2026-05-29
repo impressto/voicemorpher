@@ -1,8 +1,7 @@
 #include <Arduino.h>
-#include <SPI.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
+#include <TFT_eSPI.h>
 #include <LittleFS.h>
+using namespace fs;
 #include <Preferences.h>
 #include "driver/i2s.h"
 #include "config.h"
@@ -21,13 +20,7 @@ static Preferences g_prefs;
 #define I2S_TX_SD 38      // DIN (data in)
 #define AMP_SD 21         // amplifier shutdown/enable pin (AMP_SD)
 
-// ST7789V TFT display pins (SPI)
-#define TFT_SCLK  12
-#define TFT_MOSI  11
-#define TFT_CS    10
-#define TFT_DC     9
-#define TFT_RST   13
-#define TFT_BL     8
+// ST7789V TFT display — pins defined in include/User_Setup.h
 #define TFT_W    320   // logical width after setRotation(1)
 #define TFT_H    240   // logical height after setRotation(1)
 #define ITEM_H    26   // menu row height (9 × 26 = 234 fits in 240px)
@@ -55,7 +48,7 @@ static bool g_has_recording = false;
 float playback_gain = DEFAULT_PLAYBACK_GAIN; // adjust default volume in src/config.h
   
 // Menu and UI
-Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
+TFT_eSPI tft = TFT_eSPI();
 
 enum MenuItem
 {
@@ -233,9 +226,9 @@ static const uint16_t C_BG = 0x0821; // dark navy background
 static void drawHeader(const char *title)
 {
   fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
-  tft.fillRect(0, 0, 4, 36, ST77XX_CYAN);
-  tft.drawFastHLine(0, 36, TFT_W, ST77XX_CYAN);
-  tft.setTextColor(ST77XX_WHITE);
+  tft.fillRect(0, 0, 4, 36, TFT_CYAN);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
   tft.setCursor(10, 10);
   tft.print(title);
@@ -261,7 +254,7 @@ static void drawHints(const char *line1, const char *line2 = nullptr)
 // Progress bar with rounded frame and green→yellow gradient fill
 static void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h, float level)
 {
-  tft.drawRoundRect(x, y, w, h, 3, ST77XX_WHITE);
+  tft.drawRoundRect(x, y, w, h, 3, TFT_WHITE);
   tft.fillRoundRect(x + 1, y + 1, w - 2, h - 2, 2, tft.color565(12, 15, 38));
   int16_t fw = (int16_t)(level * (w - 2));
   if (fw > 0)
@@ -283,8 +276,8 @@ void drawMenu()
     {
       // Teal→dark-teal gradient selection bar with cyan left accent stripe
       fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
-      tft.fillRect(0, y, 4, ITEM_H - 1, ST77XX_CYAN);
-      tft.setTextColor(ST77XX_WHITE);
+      tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+      tft.setTextColor(TFT_WHITE);
     }
     else
     {
@@ -305,13 +298,13 @@ void drawStatus(const char *line1, const char *line2)
   tft.fillScreen(C_BG);
   // Thin accent strip at top
   fillGradH(0, 0, TFT_W, 4, 0, 200, 220, 0, 80, 150);
-  tft.setTextColor(ST77XX_CYAN);
+  tft.setTextColor(TFT_CYAN);
   tft.setTextSize(2);
   tft.setCursor(4, 90);
   tft.print(line1);
   if (line2)
   {
-    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextColor(TFT_WHITE);
     tft.setCursor(4, 120);
     tft.print(line2);
   }
@@ -344,7 +337,7 @@ static int showDurationSubMenu(int currentSecs, int maxSecs = g_max_record_secs)
       tft.fillRect(BX, BY + BH + 8, BW, 22, C_BG);
       char valBuf[32];
       snprintf(valBuf, sizeof(valBuf), "Duration: %ds", secs);
-      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextColor(TFT_CYAN);
       tft.setTextSize(2);
       tft.setCursor(BX, BY + BH + 10);
       tft.print(valBuf);
@@ -419,7 +412,7 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
         snprintf(valBuf, sizeof(valBuf), "%s: %.2f%s", paramLabel, actualVal, unit);
       else
         snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
-      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextColor(TFT_CYAN);
       tft.setTextSize(2);
       tft.setCursor(BX, BY + BH + 10);
       tft.print(valBuf);
@@ -468,7 +461,7 @@ static int showPassthroughFxSubMenu()
     {
       prevSel = sel;
       tft.fillRect(4, 50, TFT_W - 8, 22, C_BG);
-      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextColor(TFT_CYAN);
       tft.setTextSize(2);
       tft.setCursor(8, 100);
       char valBuf[32];
@@ -514,7 +507,7 @@ static int showLongPlayFxSubMenu()
     {
       prevSel = sel;
       tft.fillRect(4, 90, TFT_W - 8, 22, C_BG);
-      tft.setTextColor(ST77XX_CYAN);
+      tft.setTextColor(TFT_CYAN);
       tft.setTextSize(2);
       tft.setCursor(8, 90);
       char valBuf[32];
@@ -575,8 +568,8 @@ static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int m
       // Update header slot number
       snprintf(hdrBuf, sizeof(hdrBuf), "%s  %d/%d", action, slot, maxSlots);
       fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
-      tft.fillRect(0, 0, 4, 36, ST77XX_CYAN);
-      tft.setTextColor(ST77XX_WHITE);
+      tft.fillRect(0, 0, 4, 36, TFT_CYAN);
+      tft.setTextColor(TFT_WHITE);
       tft.setTextSize(2);
       tft.setCursor(10, 10);
       tft.print(hdrBuf);
@@ -595,7 +588,7 @@ static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int m
         snprintf(status, sizeof(status), "empty");
       }
       tft.fillRect(4, 50, TFT_W - 8, 22, C_BG);
-      tft.setTextColor(ST77XX_WHITE);
+      tft.setTextColor(TFT_WHITE);
       tft.setTextSize(2);
       tft.setCursor(8, 60);
       tft.print(status);
@@ -724,7 +717,7 @@ static void recordToLittleFS(int durationSecs, const char *path)
         drawProgressBar(BX, BY, BW, BH, (float)written / plannedSamples);
         char timeBuf[32];
         snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
-        tft.setTextColor(ST77XX_CYAN);
+        tft.setTextColor(TFT_CYAN);
         tft.setTextSize(2);
         tft.setCursor(BX, BY + BH + 10);
         tft.print(timeBuf);
@@ -1215,8 +1208,8 @@ static int showEffectsSubMenu()
         if (itemEnum == sel)
         {
           fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
-          tft.fillRect(0, y, 4, ITEM_H - 1, ST77XX_CYAN);
-          tft.setTextColor(ST77XX_WHITE);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
         }
         else
         {
@@ -1232,14 +1225,14 @@ static int showEffectsSubMenu()
       // Scroll arrows
       if (startIdx > 0)
       {
-        tft.setTextColor(ST77XX_CYAN);
+        tft.setTextColor(TFT_CYAN);
         tft.setTextSize(1);
         tft.setCursor(TFT_W - 10, 2);
         tft.print("^");
       }
       if (startIdx + visibleCount < effectCount)
       {
-        tft.setTextColor(ST77XX_CYAN);
+        tft.setTextColor(TFT_CYAN);
         tft.setTextSize(1);
         tft.setCursor(TFT_W - 10, visibleCount * ITEM_H - 8);
         tft.print("v");
@@ -1621,7 +1614,7 @@ static void showSplash()
   for (int row = 0; row < TFT_H; ++row)
   {
     if (f.read((uint8_t *)rowBuf, TFT_W * 2) != TFT_W * 2) break;
-    tft.writePixels(rowBuf, TFT_W);
+    tft.pushColors(rowBuf, TFT_W);
     if ((row & 31) == 31) yield();
   }
   tft.endWrite();
@@ -2579,9 +2572,8 @@ void setup()
   digitalWrite(AMP_SD, HIGH);
   Serial.printf("✓ AMP_SD enabled on GPIO%d\n", AMP_SD);
 
-  SPI.begin(TFT_SCLK, -1, TFT_MOSI);
-  tft.init(240, 320);
-  tft.setRotation(1);  // landscape (clockwise from portrait)
+  tft.init();
+  tft.setRotation(3);  // landscape (rotated 180° from portrait)
   tft.fillScreen(C_BG);
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
