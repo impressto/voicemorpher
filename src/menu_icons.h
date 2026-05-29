@@ -136,16 +136,26 @@ static const uint8_t ICON_CHORUS[] PROGMEM = {
   0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+// Stacked disks = Storage/Database icon
+static const uint8_t ICON_STORAGE[] PROGMEM = {
+  0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
+  0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
+  0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
 static const uint8_t* const MENU_ICONS[] PROGMEM = {
-  ICON_FLASH_REC,
-  ICON_RECORD,
-  ICON_FLASH_PLAY,
-  ICON_PLAY,
-  ICON_EFFECTS,
-  ICON_LIVE_FX,
-  ICON_SAVE,
-  ICON_LOAD,
-  ICON_VOLUME,
+  // Root menu items (indices 0-5)
+  ICON_RECORD,      // MENU_RECORD
+  ICON_PLAY,        // MENU_PLAY
+  ICON_EFFECTS,     // MENU_EFFECTS
+  ICON_LIVE_FX,     // MENU_PASSTHROUGH
+  ICON_STORAGE,     // MENU_STORAGE
+  ICON_VOLUME,      // MENU_VOLUME
+  // Storage sub-menu items (indices 6-7)
+  ICON_FLASH_REC,   // MENU_LONG_REC  (Stored Rec)
+  ICON_FLASH_PLAY,  // MENU_LONG_PLAY (Stored Play)
+  // Effects sub-menu items (indices 8+)
   ICON_REVERSE,
   ICON_PITCH,
   ICON_ECHO,

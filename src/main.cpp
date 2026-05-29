@@ -27,6 +27,13 @@ static Preferences g_prefs;
 #define ITEM_H    26   // menu row height (9 × 26 = 234 fits in 240px)
 #define COL_GRAY 0x7BEF
 
+// Waveform display geometry — set WAVEFORM_HEIGHT in src/config.h to resize.
+#define WF_X   8
+#define WF_Y   38
+#define WF_W   (TFT_W - 16)
+#define WF_H   WAVEFORM_HEIGHT
+#define WF_CY  (WF_Y + WF_H / 2)
+
 // Joystick pins
 #define JOY_X_PIN 17
 #define JOY_Y_PIN 20
@@ -54,19 +61,21 @@ TFT_eSPI tft = TFT_eSPI();
 enum MenuItem
 {
   // Root menu items (0 to MENU_ROOT_COUNT-1)
-  MENU_LONG_REC,
   MENU_RECORD,
-  MENU_LONG_PLAY,
   MENU_PLAY,
   MENU_EFFECTS,
   MENU_PASSTHROUGH,
-  MENU_SAVE,
-  MENU_LOAD,
+  MENU_STORAGE,
   MENU_VOLUME,
   MENU_ROOT_COUNT,
 
-  // Effects sub-menu items (MENU_ROOT_COUNT to MENU_COUNT-1)
-  MENU_REVERSE = MENU_ROOT_COUNT,
+  // Storage sub-menu items (MENU_ROOT_COUNT to MENU_STORAGE_COUNT-1)
+  MENU_LONG_REC = MENU_ROOT_COUNT,
+  MENU_LONG_PLAY,
+  MENU_STORAGE_COUNT,
+
+  // Effects sub-menu items (MENU_STORAGE_COUNT to MENU_COUNT-1)
+  MENU_REVERSE = MENU_STORAGE_COUNT,
   MENU_PITCH,
   MENU_ECHO,
   MENU_RINGMOD,
@@ -101,16 +110,18 @@ enum MenuItem
 #define FA_UP        "\xEF\x81\xB7"  // U+F077
 #define FA_DOWN      "\xEF\x81\xB8"  // U+F078
 
-static const char *menuLabels[MENU_COUNT] = {
-  "Flash Rec",
+static const char *menuLabels[] = {
+  // Root menu items
   "Record",
-  "Flash Play",
   "Play",
   "Effects",
   "Live FX",
-  "Save",
-  "Load",
+  "Storage",
   "Volume",
+  // Storage sub-menu items
+  "Stored Rec",
+  "Stored Play",
+  // Effects sub-menu items
   "Reverse",
   "Pitch",
   "Echo",
@@ -127,6 +138,14 @@ int currentMenu = 0;
 int lastMenu = -1;
 static int lastJoystickY = 0;
 static unsigned long lastJoystickMoveMs = 0;
+
+// Waveform playback display state
+static bool    g_waveform_visible = false;
+static int32_t g_wf_total         = 0;       // 0 = use active_sample_count as denominator
+static int     g_wf_last_px       = -1;
+static bool    g_wf_use_peaks     = false;   // true when rendering from g_wf_peaks (Stored Play)
+static int16_t g_wf_peaks[TFT_W] = {};      // peak sample per display column for Stored Play
+static int     g_wf_peak          = 32768;   // actual peak amplitude; normalises the display height
 
 // I2S ports
 const i2s_port_t I2S_RX_PORT = I2S_NUM_0;
@@ -331,6 +350,113 @@ void drawStatus(const char *line1, const char *line2)
   }
 }
 
+// Redraws one pixel column of the waveform (used for initial draw and cursor erase).
+static void drawWfColumn(int px)
+{
+  int x = WF_X + 1 + px;
+  tft.drawFastVLine(x, WF_Y + 1, WF_H - 2, C_BG);
+  tft.drawPixel(x, WF_CY, tft.color565(20, 30, 60));
+
+  const int innerW = WF_W - 2;
+  int16_t s;
+  if (g_wf_use_peaks)
+  {
+    s = g_wf_peaks[px];
+  }
+  else
+  {
+    int sIdx = (int)((int64_t)px * active_sample_count / innerW);
+    if (sIdx >= active_sample_count) sIdx = active_sample_count - 1;
+    s = record_buffer[sIdx];
+  }
+  int amp = (int)s * (WF_H / 2 - 2) / g_wf_peak;
+  int y0 = WF_CY, y1 = WF_CY - amp;
+  if (y1 < WF_Y + 1) y1 = WF_Y + 1;
+  if (y1 > WF_Y + WF_H - 2) y1 = WF_Y + WF_H - 2;
+  uint16_t wc = tft.color565(0, 180, 220);
+  if (y1 <= y0) tft.drawFastVLine(x, y1, y0 - y1 + 1, wc);
+  else          tft.drawFastVLine(x, y0, y1 - y0 + 1, wc);
+}
+
+static void drawWaveformScreen(const char *title)
+{
+  g_wf_last_px = -1;
+
+  // Normalise to actual peak so quiet recordings still fill the box.
+  // Floor at 1000 (~3 % of full scale) so near-silence isn't stretched to noise.
+  {
+    int peak = 1;
+    if (g_wf_use_peaks)
+    {
+      for (int px = 0; px < WF_W - 2; ++px)
+        if (abs(g_wf_peaks[px]) > peak) peak = abs(g_wf_peaks[px]);
+    }
+    else
+    {
+      for (int i = 0; i < active_sample_count; ++i)
+        if (abs(record_buffer[i]) > peak) peak = abs(record_buffer[i]);
+    }
+    g_wf_peak = peak > 1000 ? peak : 1000;
+  }
+
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(8, 8);
+  tft.print(title);
+
+  tft.drawRect(WF_X, WF_Y, WF_W, WF_H, tft.color565(40, 50, 100));
+  tft.drawFastHLine(WF_X + 1, WF_CY, WF_W - 2, tft.color565(20, 30, 60));
+
+  for (int px = 0; px < WF_W - 2; ++px)
+    drawWfColumn(px);
+}
+
+// Scans the already-open LittleFS file to fill g_wf_peaks, then seeks back to
+// the start of sample data so the caller can immediately begin playback.
+static void fillStoredWaveformBuf(File &f, int32_t totalSamples)
+{
+  const int innerW = WF_W - 2;
+  memset(g_wf_peaks, 0, sizeof(g_wf_peaks));
+  if (totalSamples <= 0) return;
+
+  const int CHUNK = 256;
+  int16_t chunk[CHUNK];
+  int32_t pos = 0;
+
+  while (pos < totalSamples)
+  {
+    int toRead = (int)min((int32_t)CHUNK, totalSamples - pos);
+    int got = (int)(f.read((uint8_t *)chunk, toRead * sizeof(int16_t)) / sizeof(int16_t));
+    if (got == 0) break;
+    for (int i = 0; i < got; ++i)
+    {
+      int px = (int)((int64_t)(pos + i) * innerW / totalSamples);
+      if (px >= innerW) px = innerW - 1;
+      if (abs(chunk[i]) > abs(g_wf_peaks[px]))
+        g_wf_peaks[px] = chunk[i];
+    }
+    pos += got;
+  }
+
+  f.seek(sizeof(int32_t));  // rewind to start of sample data for playback
+}
+
+static void drawWaveformPlayhead(int samplePos)
+{
+  const int innerW = WF_W - 2;
+  int32_t total = g_wf_total > 0 ? g_wf_total : (int32_t)active_sample_count;
+  int px = (int)((int64_t)samplePos * innerW / total);
+  if (px < 0) px = 0;
+  if (px >= innerW) px = innerW - 1;
+  if (px == g_wf_last_px) return;
+  if (g_wf_last_px >= 0) drawWfColumn(g_wf_last_px);
+  tft.drawFastVLine(WF_X + 1 + px, WF_Y + 1, WF_H - 2, TFT_WHITE);
+  g_wf_last_px = px;
+}
+
 // Shows a sub-menu to select recording duration (1 to maxSecs seconds).
 // Joystick X adjusts in 1-second steps; button confirms.
 static int showDurationSubMenu(int currentSecs, int maxSecs = g_max_record_secs)
@@ -519,7 +645,7 @@ static int showLongPlayFxSubMenu()
 
   int prevSel = -1;
   tft.fillScreen(C_BG);
-  drawHeader("Long Play FX");
+  drawHeader("Stored Play FX");
   drawHints("< X: choose >", "Btn: play");
 
   while (true)
@@ -552,11 +678,7 @@ static int showLongPlayFxSubMenu()
   }
 }
 
-static const char *slotPath(int slot)
-{
-  static const char *paths[3] = { "/rec1.pcm", "/rec2.pcm", "/rec3.pcm" };
-  return (slot >= 1 && slot <= 3) ? paths[slot - 1] : paths[0];
-}
+static const char *autoSlotPath() { return "/rec_auto.pcm"; }
 
 static const char *longSlotPath(int slot)
 {
@@ -638,15 +760,11 @@ static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int m
   }
 }
 
-static void saveRecording(int slot)
+static void saveRecordingAuto()
 {
-  if (!LittleFS.begin(true)) { drawStatus("Save failed!", "FS error"); delay(1500); return; }
-
-  const char *path = slotPath(slot);
-  drawStatus("Saving...", path);
-
+  const char *path = autoSlotPath();
   File f = LittleFS.open(path, "w");
-  if (!f) { drawStatus("Save failed!", "Open error"); delay(1500); return; }
+  if (!f) return;
 
   int32_t count = active_sample_count;
   f.write((uint8_t *)&count, sizeof(count));
@@ -658,43 +776,30 @@ static void saveRecording(int slot)
     f.write((uint8_t *)(record_buffer + i), n * sizeof(int16_t));
   }
   f.close();
-
-  char info[32];
-  snprintf(info, sizeof(info), "%ds -> %s", count / SAMPLE_RATE, path);
-  drawStatus("Saved!", info);
-  delay(1200);
 }
 
-static void loadRecording(int slot)
+static bool loadRecordingAuto()
 {
-  if (!LittleFS.begin(true)) { drawStatus("Load failed!", "FS error"); delay(1500); return; }
-
-  const char *path = slotPath(slot);
-  drawStatus("Loading...", path);
-
+  const char *path = autoSlotPath();
   File f = LittleFS.open(path, "r");
-  if (!f) { drawStatus("Slot empty", "Nothing saved"); delay(1500); return; }
+  if (!f) return false;
 
   int32_t count = 0;
   if (f.read((uint8_t *)&count, sizeof(count)) != sizeof(count) ||
-      count <= 0 || count > SAMPLE_RATE * 10)
+      count <= 0 || count > SAMPLE_RATE * g_max_record_secs)
   {
-    f.close(); drawStatus("Load failed!", "Bad file"); delay(1500); return;
+    f.close(); return false;
   }
 
   size_t want = count * sizeof(int16_t);
   size_t got  = f.read((uint8_t *)record_buffer, want);
   f.close();
 
-  if (got < want) { drawStatus("Load failed!", "Truncated"); delay(1500); return; }
+  if (got < want) return false;
 
   active_sample_count = count;
   g_has_recording = true;
-
-  char info[32];
-  snprintf(info, sizeof(info), "%ds from %s", count / SAMPLE_RATE, path);
-  drawStatus("Loaded!", info);
-  delay(1200);
+  return true;
 }
 
 static void recordToLittleFS(int durationSecs, const char *path)
@@ -734,7 +839,7 @@ static void recordToLittleFS(int durationSecs, const char *path)
       {
         const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
         tft.fillScreen(C_BG);
-        drawHeader("Long Record");
+        drawHeader("Stored Rec");
         drawProgressBar(BX, BY, BW, BH, (float)written / plannedSamples);
         char timeBuf[32];
         snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
@@ -795,6 +900,13 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   }
   int32_t fileSamples = (f.size() - sizeof(int32_t)) / sizeof(int16_t);
   int32_t totalSamples = min(headerSamples, fileSamples);
+  if (g_waveform_visible)
+  {
+    g_wf_total = totalSamples;
+    fillStoredWaveformBuf(f, totalSamples);
+    g_wf_use_peaks = true;
+    drawWaveformScreen("Stored Play");
+  }
 
   // Pitch Up — granular synthesis, duration-preserving (early return)
   if (fx == 5)
@@ -821,6 +933,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
         played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) break;
       }
       f.close();
@@ -928,6 +1041,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
         outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) cancelled = true;
       }
       played++;
@@ -969,6 +1083,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
         played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) break;
       }
       f.close();
@@ -1076,6 +1191,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
         outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) cancelled = true;
       }
       played++;
@@ -1188,6 +1304,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, samplesRead * sizeof(int16_t), &bw, portMAX_DELAY);
     played += samplesRead;
+    if (g_waveform_visible) drawWaveformPlayhead((int)played);
 
     if (isJoystickButtonPressed()) break;
   }
@@ -1198,11 +1315,81 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   stopTxAndFlush();
 }
 
-static int showEffectsSubMenu()
+static int showStorageSubMenu()
 {
   static int sel = MENU_ROOT_COUNT;
   unsigned long lastMoveMs = 0;
-  const int effectCount = MENU_COUNT - MENU_ROOT_COUNT;
+  const int storageCount = MENU_STORAGE_COUNT - MENU_ROOT_COUNT;
+  while (isJoystickButtonPressed()) delay(10);
+
+  int prevSel = -1;
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < storageCount; ++i)
+      {
+        int itemEnum = MENU_ROOT_COUNT + i;
+        int16_t y = i * ITEM_H;
+        uint16_t iconColor;
+        if (itemEnum == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          iconColor = TFT_WHITE;
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          iconColor = 0xDEFB;
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
+        tft.setCursor(28, y + 5);
+        tft.print(menuLabels[itemEnum]);
+      }
+
+      tft.setTextSize(1);
+      tft.setTextColor(COL_GRAY);
+      tft.setCursor(4, storageCount * ITEM_H + 4);
+      tft.print("< X: back");
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return -1;
+      sel += (y < 0 ? -1 : 1);
+      if (sel < MENU_ROOT_COUNT) sel = MENU_ROOT_COUNT;
+      if (sel >= MENU_STORAGE_COUNT) sel = MENU_STORAGE_COUNT - 1;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return sel;
+    }
+    delay(10);
+  }
+}
+
+static int showEffectsSubMenu()
+{
+  static int sel = MENU_STORAGE_COUNT;
+  unsigned long lastMoveMs = 0;
+  const int effectCount = MENU_COUNT - MENU_STORAGE_COUNT;
   while (isJoystickButtonPressed()) delay(10);
 
   int prevSel2 = -1;
@@ -1213,7 +1400,7 @@ static int showEffectsSubMenu()
     {
       prevSel2 = sel;
       const int visibleCount = 8;
-      int relSel = sel - MENU_ROOT_COUNT;
+      int relSel = sel - MENU_STORAGE_COUNT;
       int startIdx = relSel - visibleCount / 2;
       if (startIdx < 0) startIdx = 0;
       if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
@@ -1224,7 +1411,7 @@ static int showEffectsSubMenu()
 
       for (int i = 0; i < visibleCount && (startIdx + i) < effectCount; ++i)
       {
-        int itemEnum = MENU_ROOT_COUNT + startIdx + i;
+        int itemEnum = MENU_STORAGE_COUNT + startIdx + i;
         int16_t y = i * ITEM_H;
         uint16_t iconColor;
         if (itemEnum == sel)
@@ -1272,7 +1459,7 @@ static int showEffectsSubMenu()
     {
       if (x < 0) return -1;
       sel += (y < 0 ? -1 : 1);
-      if (sel < MENU_ROOT_COUNT) sel = MENU_ROOT_COUNT;
+      if (sel < MENU_STORAGE_COUNT) sel = MENU_STORAGE_COUNT;
       if (sel >= MENU_COUNT) sel = MENU_COUNT - 1;
       lastMoveMs = now;
     }
@@ -1292,8 +1479,8 @@ void runMenuAction(int item)
 
   // Block all playback effects if nothing has been recorded yet
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
-      && item != MENU_LOAD && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_VOLUME && item != MENU_EFFECTS)
+      && item != MENU_LONG_REC && item != MENU_LONG_PLAY
+      && item != MENU_VOLUME && item != MENU_EFFECTS && item != MENU_STORAGE)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -1307,17 +1494,19 @@ void runMenuAction(int item)
     {
       int durSecs = showDurationSubMenu(active_sample_count / SAMPLE_RATE);
       active_sample_count = durSecs * SAMPLE_RATE;
-      char durStr[32];
-      snprintf(durStr, sizeof(durStr), "%ds recording...", durSecs);
-      drawStatus("Recording...", durStr);
       recordToBuffer();
-      drawStatus("Recording done.", "Press button");
+      saveRecordingAuto();
+      char durStr[32];
+      snprintf(durStr, sizeof(durStr), "%ds saved  Btn:ok", durSecs);
+      drawStatus("Recording done.", durStr);
       while (!isJoystickButtonPressed()) delay(50);
       break;
     }
     case MENU_PLAY:
-      drawStatus("Playing raw...", nullptr);
+      g_waveform_visible = true;
+      drawWaveformScreen("Play");
       playBufferSimple();
+      g_waveform_visible = false;
       break;
     case MENU_EFFECTS:
     {
@@ -1326,6 +1515,16 @@ void runMenuAction(int item)
         int fx = showEffectsSubMenu();
         if (fx < 0) break;
         runMenuAction(fx);
+      }
+      break;
+    }
+    case MENU_STORAGE:
+    {
+      while (true)
+      {
+        int item = showStorageSubMenu();
+        if (item < 0) break;
+        runMenuAction(item);
       }
       break;
     }
@@ -1342,8 +1541,10 @@ void runMenuAction(int item)
       break;
     }
     case MENU_REVERSE:
-      drawStatus("Playing reverse...", nullptr);
+      g_waveform_visible = true;
+      drawWaveformScreen("Reverse");
       playReverse();
+      g_waveform_visible = false;
       break;
     case MENU_PITCH:
     {
@@ -1356,8 +1557,10 @@ void runMenuAction(int item)
         float speed = 0.3f + s_pitchLevel * 2.2f;
         char info[32];
         snprintf(info, sizeof(info), "Speed: %.2fx", speed);
-        drawStatus("Pitch...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Pitch");
         playResample(speed);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1372,8 +1575,10 @@ void runMenuAction(int item)
         float decay = 0.2f + s_echoLevel * 0.5f;
         char info[32];
         snprintf(info, sizeof(info), "%.0fms dec %.2f", delaySec * 1000.0f, decay);
-        drawStatus("Echo...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Echo");
         playEcho(delaySec, decay);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1387,8 +1592,10 @@ void runMenuAction(int item)
         float freq = 10.0f + s_ringmodLevel * 80.0f;
         char info[32];
         snprintf(info, sizeof(info), "Freq: %.0fHz", freq);
-        drawStatus("Star fighter...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Star fighter");
         playRingMod(freq);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1405,8 +1612,10 @@ void runMenuAction(int item)
         int repeats = 2 + (int)(s_stutterLevel * 0.04f);
         char info[32];
         snprintf(info, sizeof(info), "%.0fms x%d", chunkSec * 1000.0f, repeats);
-        drawStatus("Stutter...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Stutter");
         playStutter(chunkSec, repeats);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1420,8 +1629,10 @@ void runMenuAction(int item)
         float rate = 2.0f + s_tremoloLevel * 13.0f;
         char info[32];
         snprintf(info, sizeof(info), "Rate: %.1fHz", rate);
-        drawStatus("Tremolo...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Tremolo");
         playTremolo(rate);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1433,8 +1644,10 @@ void runMenuAction(int item)
         if (lvl < 0.0f) break;
         s_hauntedLevel = lvl;
         float decay = 0.1f + s_hauntedLevel * 0.6f;
-        drawStatus("Haunted...", "Reverse + Echo");
+        g_waveform_visible = true;
+        drawWaveformScreen("Haunted");
         playHaunted(0.25f, decay);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1448,8 +1661,10 @@ void runMenuAction(int item)
         float ringFreq = 20.0f + s_alienLevel * 60.0f;
         char info[32];
         snprintf(info, sizeof(info), "Pitch up + %.0fHz", ringFreq);
-        drawStatus("Alien...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Alien");
         playAlien(1.6f, ringFreq);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1461,8 +1676,10 @@ void runMenuAction(int item)
         if (lvl < 0.0f) break;
         s_monsterLevel = lvl;
         float decay = 0.1f + s_monsterLevel * 0.6f;
-        drawStatus("Monster...", "Pitch dn + Echo");
+        g_waveform_visible = true;
+        drawWaveformScreen("Monster");
         playMonster(0.5f, 0.3f, decay);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1477,44 +1694,37 @@ void runMenuAction(int item)
         float depth = s_chorusLevel;
         char info[32];
         snprintf(info, sizeof(info), "Rate:%.1fHz d:%.0f%%", rate, depth * 100.0f);
-        drawStatus("Chorus...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Chorus");
         playChorus(rate, depth);
+        g_waveform_visible = false;
       }
-      break;
-    }
-    case MENU_SAVE:
-    {
-      int slot = showSlotSubMenu("Save", slotPath, 3);
-      if (slot > 0) saveRecording(slot);
-      break;
-    }
-    case MENU_LOAD:
-    {
-      int slot = showSlotSubMenu("Load", slotPath, 3);
-      if (slot > 0) loadRecording(slot);
       break;
     }
     case MENU_LONG_REC:
     {
-      int slot = showSlotSubMenu("Long Rec", longSlotPath, 2);
+      int slot = showSlotSubMenu("Stored Rec", longSlotPath, 2);
       if (slot < 0) break;
       g_long_rec_secs = showDurationSubMenu(g_long_rec_secs, 60);
       char durStr[32];
-      snprintf(durStr, sizeof(durStr), "%ds to flash...", g_long_rec_secs);
-      drawStatus("Long Record", durStr);
+      snprintf(durStr, sizeof(durStr), "%ds stored...", g_long_rec_secs);
+      drawStatus("Stored Rec", durStr);
       recordToLittleFS(g_long_rec_secs, longSlotPath(slot));
       break;
     }
     case MENU_LONG_PLAY:
     {
-      int slot = showSlotSubMenu("Long Play", longSlotPath, 2);
+      int slot = showSlotSubMenu("Stored Play", longSlotPath, 2);
       if (slot < 0) break;
       int fx = showLongPlayFxSubMenu();
       static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
-      drawStatus("Long Play...", status);
+      g_waveform_visible = true;
       playFromLittleFSWithEffect(fx, longSlotPath(slot));
+      g_waveform_visible = false;
+      g_wf_use_peaks = false;
+      g_wf_total = 0;
       break;
     }
     case MENU_VOLUME:
@@ -1778,6 +1988,7 @@ static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
       return;
     }
     offset += written_samples;
+    if (g_waveform_visible) drawWaveformPlayhead((int)offset);
     if (isJoystickButtonPressed()) return;
   }
 }
@@ -1886,8 +2097,27 @@ void recordToBuffer()
   size_t sample_offset = 0;
   Serial.printf("Recording %d seconds (%d samples)...\n", active_sample_count / SAMPLE_RATE, active_sample_count);
 
+  const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+  int totalSecs = active_sample_count / SAMPLE_RATE;
+
   while (sample_offset < active_sample_count)
   {
+    // Refresh display roughly every half-second of audio
+    if (sample_offset % (SAMPLE_RATE / 2) < TEMP_SAMPLES)
+    {
+      tft.fillScreen(C_BG);
+      drawHeader("Recording...");
+      drawProgressBar(BX, BY, BW, BH, (float)sample_offset / active_sample_count);
+      int elapsed = (int)(sample_offset / SAMPLE_RATE);
+      int remaining = totalSecs - elapsed;
+      char timeBuf[32];
+      snprintf(timeBuf, sizeof(timeBuf), "%ds remaining", remaining);
+      tft.setTextColor(TFT_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(BX, BY + BH + 10);
+      tft.print(timeBuf);
+    }
+
     size_t samples_to_read = min(TEMP_SAMPLES, (size_t)(active_sample_count - sample_offset));
     size_t bytes_to_read = samples_to_read * sizeof(int16_t);
     size_t bytes_read = 0;
@@ -1954,6 +2184,7 @@ void playReverse()
     }
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, count * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+    if (g_waveform_visible) drawWaveformPlayhead(idx);
     if (isJoystickButtonPressed()) break;
     idx -= count;
   }
@@ -1977,6 +2208,7 @@ void playResample(float speed)
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead((int)idx);
       if (isJoystickButtonPressed()) break;
     }
     idx += speed;
@@ -2013,6 +2245,7 @@ void playEcho(float delaySec, float decay)
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
@@ -2045,6 +2278,7 @@ void playRingMod(float freq)
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
@@ -2085,6 +2319,7 @@ void playStutter(float chunkSec, int repeats)
       }
     }
 
+    if (g_waveform_visible) drawWaveformPlayhead(pos);
     if (isJoystickButtonPressed()) break;
   }
   stopTxAndFlush();
@@ -2112,6 +2347,7 @@ void playTremolo(float rate)
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
@@ -2148,6 +2384,7 @@ void playHaunted(float delaySec, float decay)
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
@@ -2185,6 +2422,7 @@ void playAlien(float speed, float ringFreq)
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead((int)idx);
       if (isJoystickButtonPressed()) break;
     }
     idx += speed;
@@ -2235,6 +2473,7 @@ void playMonster(float speed, float delaySec, float decay)
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead((int)idx);
       if (isJoystickButtonPressed()) break;
     }
     idx += speed;
@@ -2291,6 +2530,7 @@ void playChorus(float rate, float depth)
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
@@ -2640,6 +2880,8 @@ void setup()
   Serial.printf("✓ Volume loaded: %.2fx\n", savedGain);
 
   LittleFS.begin(true);
+  if (loadRecordingAuto())
+    Serial.printf("✓ Auto-loaded last recording: %ds\n", active_sample_count / SAMPLE_RATE);
 
   initI2S();
 #if PLAY_STARTUP_WAV

@@ -23,6 +23,13 @@
 #define DEFAULT_PLAYBACK_GAIN 6.0f
 #endif
 
+// Waveform display height in pixels.
+// The waveform box sits just below the title bar (y=38) and fills downward.
+// Max usable value is roughly TFT_H - 42 = 198. Decrease for a smaller box.
+#ifndef WAVEFORM_HEIGHT
+#define WAVEFORM_HEIGHT 196
+#endif
+
 // Enable a light post-recording smoothing filter to reduce microphone crackle.
 #ifndef ENABLE_AUDIO_CLEANING
 #define ENABLE_AUDIO_CLEANING 1
