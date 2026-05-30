@@ -23,6 +23,13 @@
 #define DEFAULT_PLAYBACK_GAIN 6.0f
 #endif
 
+// Audio sample rate in Hz. Higher = better frequency response, shorter max RAM buffer.
+// 11025 Hz → Nyquist 5.5 kHz, 10 s max RAM buffer.
+// 22050 Hz → Nyquist 11 kHz,   5 s max RAM buffer (same bytes, better quality).
+#ifndef SAMPLE_RATE
+#define SAMPLE_RATE 11025
+#endif
+
 // Waveform display height in pixels.
 // The waveform box sits just below the title bar (y=38) and fills downward.
 // Max usable value is roughly TFT_H - 42 = 198. Decrease for a smaller box.

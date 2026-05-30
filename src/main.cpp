@@ -42,7 +42,6 @@ static Preferences g_prefs;
 #define JOY_HIGH_THRESHOLD 2800
 
 // Audio parameters
-const int SAMPLE_RATE = 11025;
 const int BITS_PER_SAMPLE = 16;
 const int CHANNELS = 1; // mono
 
@@ -77,6 +76,7 @@ enum MenuItem
   // Settings sub-menu items (MENU_STORAGE_COUNT to MENU_SETTINGS_COUNT-1)
   MENU_VOLUME = MENU_STORAGE_COUNT,
   MENU_FEEDBACK,
+  MENU_LIVE_GAIN,
   MENU_SETTINGS_COUNT,
 
   // Effects sub-menu items (MENU_SETTINGS_COUNT to MENU_COUNT-1)
@@ -129,6 +129,7 @@ static const char *menuLabels[] = {
   // Settings sub-menu items
   "Volume",
   "Feedback",
+  "Live Gain",
   // Effects sub-menu items
   "Reverse",
   "Pitch",
@@ -153,6 +154,7 @@ static int32_t g_wf_total         = 0;       // 0 = use active_sample_count as d
 static int     g_wf_last_px       = -1;
 static bool    g_wf_use_peaks     = false;   // true when rendering from g_wf_peaks (Stored Play)
 static int16_t g_wf_peaks[TFT_W] = {};      // peak sample per display column for Stored Play
+static uint8_t g_wf_freqt[TFT_W] = {};      // normalised frequency 0=low 255=high, per column
 static int     g_wf_peak          = 32768;   // actual peak amplitude; normalises the display height
 
 // I2S ports
@@ -381,9 +383,41 @@ static void drawWfColumn(int px)
   int y0 = WF_CY, y1 = WF_CY - amp;
   if (y1 < WF_Y + 1) y1 = WF_Y + 1;
   if (y1 > WF_Y + WF_H - 2) y1 = WF_Y + WF_H - 2;
-  uint16_t wc = tft.color565(0, 180, 220);
+
+  // Colour by frequency: blue (low) → red (mid) → yellow (high)
+  float t = g_wf_freqt[px] / 255.0f;
+  uint8_t wr, wg, wb;
+  if (t < 0.5f) {
+    float t2 = t * 2.0f;               // 0→1 across blue→red
+    wr = (uint8_t)(255 * t2);
+    wg = (uint8_t)(100 * (1.0f - t2));
+    wb = (uint8_t)(255 * (1.0f - t2));
+  } else {
+    float t2 = (t - 0.5f) * 2.0f;     // 0→1 across red→yellow
+    wr = 255;
+    wg = (uint8_t)(220 * t2);
+    wb = 0;
+  }
+  uint16_t wc = tft.color565(wr, wg, wb);
   if (y1 <= y0) tft.drawFastVLine(x, y1, y0 - y1 + 1, wc);
   else          tft.drawFastVLine(x, y0, y1 - y0 + 1, wc);
+}
+
+// Stretch raw per-column frequencies to fill the full blue→yellow colour range.
+static void normalizeFreqToColor(const float *raw, int cols)
+{
+  float f_min = 1e9f, f_max = 0.0f;
+  for (int i = 0; i < cols; ++i) {
+    if (raw[i] > 0 && raw[i] < f_min) f_min = raw[i];
+    if (raw[i] > f_max) f_max = raw[i];
+  }
+  float f_range = f_max - f_min;
+  for (int i = 0; i < cols; ++i) {
+    float t = (f_range > 1.0f && raw[i] > 0) ? (raw[i] - f_min) / f_range : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    g_wf_freqt[i] = (uint8_t)(t * 255.0f);
+  }
 }
 
 static void drawWaveformScreen(const char *title)
@@ -418,6 +452,31 @@ static void drawWaveformScreen(const char *title)
   tft.drawRect(WF_X, WF_Y, WF_W, WF_H, tft.color565(40, 50, 100));
   tft.drawFastHLine(WF_X + 1, WF_CY, WF_W - 2, tft.color565(20, 30, 60));
 
+  // For buffer mode, compute ZCR-based frequency per column (peaks mode fills g_wf_freqt in fillStoredWaveformBuf)
+  if (!g_wf_use_peaks && active_sample_count > 0)
+  {
+    const int innerW = WF_W - 2;
+    const int ZCR_WIN = 512;
+    static float raw_freq[TFT_W];
+    memset(raw_freq, 0, sizeof(raw_freq));
+    for (int px = 0; px < innerW; ++px)
+    {
+      int sIdx = (int)((int64_t)px * active_sample_count / innerW);
+      int s0 = max(0, sIdx - ZCR_WIN / 2);
+      int s1 = min(active_sample_count - 1, sIdx + ZCR_WIN / 2);
+      int crossings = 0, prev_sign = record_buffer[s0] >= 0 ? 1 : -1;
+      for (int i = s0 + 1; i <= s1; ++i)
+      {
+        int sign = record_buffer[i] >= 0 ? 1 : -1;
+        if (sign != prev_sign) crossings++;
+        prev_sign = sign;
+      }
+      int winLen = s1 - s0;
+      raw_freq[px] = winLen > 0 ? (float)crossings * SAMPLE_RATE / (2.0f * winLen) : 0.0f;
+    }
+    normalizeFreqToColor(raw_freq, innerW);
+  }
+
   for (int px = 0; px < WF_W - 2; ++px)
     drawWfColumn(px);
 }
@@ -428,11 +487,20 @@ static void fillStoredWaveformBuf(File &f, int32_t totalSamples)
 {
   const int innerW = WF_W - 2;
   memset(g_wf_peaks, 0, sizeof(g_wf_peaks));
+  memset(g_wf_freqt, 0, sizeof(g_wf_freqt));
   if (totalSamples <= 0) return;
+
+  // Accumulate ZCR per column to estimate local frequency
+  // static to avoid blowing the loopTask stack (320*2 + 320*2 bytes)
+  static uint16_t zcr_count[TFT_W];
+  static uint16_t col_samples[TFT_W];
+  memset(zcr_count,   0, sizeof(zcr_count));
+  memset(col_samples, 0, sizeof(col_samples));
 
   const int CHUNK = 256;
   int16_t chunk[CHUNK];
   int32_t pos = 0;
+  int prev_sign = 0;
 
   while (pos < totalSamples)
   {
@@ -445,9 +513,26 @@ static void fillStoredWaveformBuf(File &f, int32_t totalSamples)
       if (px >= innerW) px = innerW - 1;
       if (abs(chunk[i]) > abs(g_wf_peaks[px]))
         g_wf_peaks[px] = chunk[i];
+      int sign = chunk[i] > 0 ? 1 : (chunk[i] < 0 ? -1 : 0);
+      if (sign != 0) {
+        if (prev_sign != 0 && sign != prev_sign) zcr_count[px]++;
+        col_samples[px]++;
+        prev_sign = sign;
+      }
     }
     pos += got;
   }
+
+  // Convert ZCR counts to raw frequencies, then stretch to fill the full colour range
+  static float raw_freq[TFT_W];
+  memset(raw_freq, 0, sizeof(raw_freq));
+  for (int px = 0; px < innerW; ++px)
+  {
+    raw_freq[px] = col_samples[px] > 0
+      ? (float)zcr_count[px] * SAMPLE_RATE / (2.0f * col_samples[px])
+      : 0.0f;
+  }
+  normalizeFreqToColor(raw_freq, innerW);
 
   f.seek(sizeof(int32_t));  // rewind to start of sample data for playback
 }
@@ -534,6 +619,10 @@ static float s_chorusLevel   = 0.5f;
 // Range 0-5000 on raw ADC scale; maps to s_gateLevel 0.0-1.0 for the slider.
 static float g_gate_threshold = PASSTHROUGH_GATE_THRESHOLD;
 static float s_gateLevel      = PASSTHROUGH_GATE_THRESHOLD / 5000.0f;
+// Separate output gain for live FX — lower ceiling than playback to reduce loop gain.
+// Range 0.5-6.0x; default 2.5x keeps headroom below the feedback threshold.
+static float g_live_gain      = 2.5f;
+static float s_liveGainLevel  = (2.5f - 0.5f) / 5.5f;
 // volume: maps [0,1] to gain [0.5, 10.0]; 0.579 ≈ DEFAULT_PLAYBACK_GAIN=6.0
 static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
@@ -879,6 +968,21 @@ static void recordToLittleFS(int durationSecs, const char *path)
       break;
     }
     yield();
+  }
+
+  // Draw final 100% state so the bar doesn't linger at "1s remaining"
+  {
+    const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+    int finalSecs = (int)(written / SAMPLE_RATE);
+    tft.fillScreen(C_BG);
+    drawHeader("Stored Rec");
+    drawProgressBar(BX, BY, BW, BH, 1.0f);
+    char timeBuf[32];
+    snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", finalSecs, finalSecs);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(2);
+    tft.setCursor(BX, BY + BH + 10);
+    tft.print(timeBuf);
   }
 
   f.close();
@@ -1562,7 +1666,7 @@ void runMenuAction(int item)
   // Block all playback effects if nothing has been recorded yet
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_VOLUME && item != MENU_FEEDBACK
+      && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
       && item != MENU_EFFECTS && item != MENU_STORAGE && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
@@ -1848,6 +1952,23 @@ void runMenuAction(int item)
       }
       break;
     }
+    case MENU_LIVE_GAIN:
+    {
+      // Output gain used only during Live FX — kept lower than playback gain
+      // to reduce the loop gain margin that sustains feedback. Range 0.5-6x.
+      float lvl = showLevelSubMenu("Live Gain", "Gain", s_liveGainLevel, 0.5f, 6.0f, "x");
+      if (lvl >= 0.0f)
+      {
+        s_liveGainLevel = lvl;
+        g_live_gain = 0.5f + lvl * 5.5f;
+        g_prefs.putFloat("live_gain", g_live_gain);
+        char info[32];
+        snprintf(info, sizeof(info), "Gain: %.2fx saved", g_live_gain);
+        drawStatus("Live gain saved!", info);
+        delay(1000);
+      }
+      break;
+    }
     default:
       break;
   }
@@ -2102,19 +2223,21 @@ static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
 void cleanRecording()
 {
 #if ENABLE_AUDIO_CLEANING
-  // Simple smoothing filter for recorded data to reduce crackle.
-  int16_t prev = record_buffer[0];
+  // Click/pop detector: replaces only isolated spike samples, leaving normal
+  // audio content (including high frequencies) completely untouched.
+  // A sample is a click when it differs greatly from BOTH neighbors while
+  // the neighbors themselves are relatively close to each other.
+  const int32_t CLICK_THRESHOLD = 2500 * AUDIO_CLEANING_STRENGTH;
   for (int i = 1; i < active_sample_count - 1; ++i)
   {
+    int32_t prev = record_buffer[i - 1];
+    int32_t cur  = record_buffer[i];
     int32_t next = record_buffer[i + 1];
-    int32_t cur = record_buffer[i];
-    int32_t filtered = (prev + cur + next) / 3;
-    if (AUDIO_CLEANING_STRENGTH > 1)
-    {
-      filtered = (filtered + cur) / 2;
-    }
-    prev = record_buffer[i];
-    record_buffer[i] = (int16_t)filtered;
+    int32_t d1 = abs(cur - prev);
+    int32_t d2 = abs(cur - next);
+    int32_t dn = abs(next - prev);
+    if (d1 > CLICK_THRESHOLD && d2 > CLICK_THRESHOLD && dn < d1 / 2 && dn < d2 / 2)
+      record_buffer[i] = (int16_t)((prev + next) / 2);
   }
 #endif
 }
@@ -2239,6 +2362,15 @@ void recordToBuffer()
     }
     yield();
   }
+
+  // Draw final 100% frame so it doesn't linger at "1s remaining"
+  tft.fillScreen(C_BG);
+  drawHeader("Recording...");
+  drawProgressBar(BX, BY, BW, BH, 1.0f);
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(BX, BY + BH + 10);
+  tft.print("0s remaining");
 
   Serial.printf("Recording complete. First 8 samples: %d %d %d %d %d %d %d %d\n",
     record_buffer[0], record_buffer[1], record_buffer[2], record_buffer[3],
@@ -2723,8 +2855,12 @@ void passthroughWithEffect(int fx)
     if (!pitchRing) fx = 0;
   }
 
-  // Noise gate envelope follower
+  // Noise gate envelope follower + hold timer
   float gateEnv = 0.0f;
+  unsigned long gateHoldUntilMs = 0;
+
+  // Frequency-shift phase (7 Hz ring-mod at 25% depth — de-coherences feedback resonance)
+  float freqShiftPhase = 0.0f;
 
   // Phase accumulators
   float ringPhase = 0.0f;
@@ -2738,6 +2874,19 @@ void passthroughWithEffect(int fx)
     size_t bytes_read = 0;
     i2s_read(I2S_RX_PORT, chunk, CHUNK_SAMPLES * sizeof(int16_t), &bytes_read, portMAX_DELAY);
     size_t n = bytes_read / sizeof(int16_t);
+
+    // Gate on RAW mic input before any effect amplifies the signal.
+    // This means feedback arriving at the mic (inherently quiet) is gated
+    // even when distortion would otherwise boost it past any reasonable threshold.
+    {
+      float rawPeak = 0.0f;
+      for (size_t i = 0; i < n; ++i)
+      {
+        float a = fabsf((float)chunk[i]);
+        if (a > rawPeak) rawPeak = a;
+      }
+      gateEnv += (rawPeak > gateEnv ? 0.8f : 0.05f) * (rawPeak - gateEnv);
+    }
 
     for (size_t i = 0; i < n; ++i)
     {
@@ -2906,21 +3055,23 @@ void passthroughWithEffect(int fx)
         s = out;
       }
 
-      int32_t gained = (int32_t)((float)s * playback_gain);
+      // Frequency shift: 7 Hz ring-mod at 25% depth (amplitude 0.75-1.0).
+      // Continuously de-coherences feedback resonance without audible tremolo.
+      float shift = 0.75f + 0.25f * cosf(2.0f * 3.14159265f * freqShiftPhase);
+      freqShiftPhase += 7.0f / SAMPLE_RATE;
+      if (freqShiftPhase >= 1.0f) freqShiftPhase -= 1.0f;
+
+      int32_t gained = (int32_t)((float)s * g_live_gain * shift);
       if (gained > INT16_MAX) gained = INT16_MAX;
       if (gained < INT16_MIN) gained = INT16_MIN;
       chunk[i] = (int16_t)gained;
     }
 
-    // Noise gate: measure input peak, update smoothed envelope, silence output if below threshold
-    float peak = 0.0f;
-    for (size_t i = 0; i < n; ++i)
-    {
-      float a = fabsf((float)chunk[i]);
-      if (a > peak) peak = a;
-    }
-    gateEnv += (peak > gateEnv ? 0.8f : 0.05f) * (peak - gateEnv);
+    // Gate with hold timer: once closed, stay closed for 200 ms so feedback
+    // rings have time to fully decay before audio opens again.
     if (gateEnv < g_gate_threshold)
+      gateHoldUntilMs = millis() + 200;
+    if (millis() < gateHoldUntilMs)
       memset(chunk, 0, n * sizeof(int16_t));
 
     size_t bytes_written = 0;
@@ -2955,9 +3106,17 @@ void passthroughWithEffect(int fx)
       }
     }
 
-    if (isJoystickButtonPressed() || Serial.available()) break;
+    if (isJoystickButtonPressed() || Serial.available())
+    {
+      // Silence the DMA buffer immediately so feedback dies at the button press.
+      memset(chunk, 0, sizeof(chunk));
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, bytes_read, &bw, portMAX_DELAY);
+      break;
+    }
   }
 
+  stopTxAndFlush();  // stop TX DMA, zero buffer, restart clean
   if (echoBuf)   free(echoBuf);
   if (chorusBuf) free(chorusBuf);
   if (pitchRing) free(pitchRing);
@@ -3036,6 +3195,9 @@ void setup()
   g_gate_threshold = g_prefs.getFloat("gate_thresh", PASSTHROUGH_GATE_THRESHOLD);
   s_gateLevel      = g_gate_threshold / 5000.0f;
   Serial.printf("✓ Gate threshold loaded: %.0f\n", g_gate_threshold);
+  g_live_gain     = g_prefs.getFloat("live_gain", 2.5f);
+  s_liveGainLevel = (g_live_gain - 0.5f) / 5.5f;
+  Serial.printf("✓ Live gain loaded: %.2fx\n", g_live_gain);
 
   LittleFS.begin(true);
   if (loadRecordingAuto())

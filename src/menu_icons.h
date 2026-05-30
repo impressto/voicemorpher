@@ -192,10 +192,11 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   // Storage sub-menu items (indices 6-7)
   ICON_FLASH_REC,   // MENU_LONG_REC  (Stored Rec)
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY (Stored Play)
-  // Settings sub-menu items (indices 8-9)
+  // Settings sub-menu items (indices 8-10)
   ICON_VOLUME,      // MENU_VOLUME
   ICON_FEEDBACK,    // MENU_FEEDBACK
-  // Effects sub-menu items (indices 10+)
+  ICON_LIVE_FX,     // MENU_LIVE_GAIN
+  // Effects sub-menu items (indices 11+)
   ICON_REVERSE,
   ICON_PITCH,
   ICON_ECHO,
