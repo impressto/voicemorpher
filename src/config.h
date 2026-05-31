@@ -40,7 +40,7 @@
 // Background mood music mix level (0.0 = silent, 1.0 = full scale).
 // Lower values keep music clearly in the background behind the voice.
 #ifndef MOOD_MUSIC_GAIN
-#define MOOD_MUSIC_GAIN 0.2f
+#define MOOD_MUSIC_GAIN 0.15f
 #endif
 
 // Enable a light post-recording smoothing filter to reduce microphone crackle.

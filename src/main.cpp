@@ -634,8 +634,9 @@ static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
 
 // Mood background music
-static const char *MOOD_NAMES[] = { "None", "Exciting", "Happy", "Romantica", "Sad" };
-static const char *MOOD_PATHS[] = { nullptr, "/exciting.wav", "/happy.wav", "/romantica.wav", "/sad.wav" };
+static const char *MOOD_NAMES[] = { "None", "Exciting", "Happy", "Romantica", "Sad", "Powerful", "Scary" };
+static const char *MOOD_PATHS[] = { nullptr, "/exciting.wav", "/happy.wav", "/romantica.wav", "/sad.wav", "/powerful.wav", "/scary.wav" };
+static const int   MOOD_COUNT   = 7;
 static int      g_mood            = 0;    // 0=none 1=exciting 2=happy 3=romantica 4=sad
 static uint32_t g_mood_data_start = 0;   // byte offset of PCM data in WAV file
 static uint32_t g_mood_data_size  = 0;   // total PCM bytes
@@ -754,8 +755,8 @@ static int showPassthroughFxSubMenu()
 
 static int showLongPlayFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
-  const int NUM_CHOICES = 7;
+  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien" };
+  const int NUM_CHOICES = 10;
   int sel = 0;
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
@@ -1018,7 +1019,7 @@ static void recordToLittleFS(int durationSecs, const char *path)
   delay(1200);
 }
 
-// fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus
+// fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=pitch up 6=pitch dn 7=stutter 8=monster 9=alien
 static void playFromLittleFSWithEffect(int fx, const char *path)
 {
   openMoodPlayback();
@@ -1325,6 +1326,358 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
       int32_t out = (int32_t)outF;
       if (out > INT16_MAX) out = INT16_MAX;
       if (out < INT16_MIN) out = INT16_MIN;
+      outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
+
+      if (outIdx >= FS)
+      {
+        mixMoodInto(outBuf, outIdx);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+        outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) cancelled = true;
+      }
+      played++;
+    }
+
+    if (outIdx > 0)
+    {
+      mixMoodInto(outBuf, outIdx);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+
+    free(ring);
+    f.close();
+    closeMoodPlayback();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Stutter: repeat each 100ms chunk 3 times by seeking back in the file
+  if (fx == 7)
+  {
+    const int STUTTER_SAMPLES = (int)(0.100f * SAMPLE_RATE);
+    const int STUTTER_REPEATS = 3;
+    const int WCHUNK = 256;
+    int16_t wbuf[WCHUNK];
+    int32_t played = 0;
+
+    while (played < totalSamples)
+    {
+      int32_t chunkLen   = min((int32_t)STUTTER_SAMPLES, totalSamples - played);
+      size_t  chunkStart = f.position();
+
+      for (int rep = 0; rep < STUTTER_REPEATS; ++rep)
+      {
+        f.seek(chunkStart);
+        int32_t repDone = 0;
+        while (repDone < chunkLen)
+        {
+          int toRead = (int)min((int32_t)WCHUNK, chunkLen - repDone);
+          int got = (int)(f.read((uint8_t *)wbuf, toRead * sizeof(int16_t)) / sizeof(int16_t));
+          if (got == 0) break;
+          for (int i = 0; i < got; ++i) wbuf[i] = applyPlaybackGain(wbuf[i]);
+          mixMoodInto(wbuf, got);
+          size_t bw = 0;
+          i2s_write(I2S_TX_PORT, wbuf, got * sizeof(int16_t), &bw, portMAX_DELAY);
+          repDone += got;
+        }
+      }
+
+      played += chunkLen;
+      f.seek(chunkStart + (size_t)chunkLen * sizeof(int16_t));
+      if (g_waveform_visible) drawWaveformPlayhead((int)played);
+      if (isJoystickButtonPressed()) break;
+    }
+
+    f.close();
+    closeMoodPlayback();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Monster: pitch-down granular + 300ms echo
+  if (fx == 8)
+  {
+    int32_t played = 0;
+    const int   PB_LEN   = 2048;
+    const int   PB_GRAIN = 441;
+    const int   PB_FADE  = 48;
+    const int   PB_GAP   = 100;
+    const float PB_RATE  = 0.67f;
+
+    const int MON_ECHO_LEN = (int)(0.30f * SAMPLE_RATE) + 1;
+    const float MON_DECAY  = 0.45f;
+    int16_t *monEcho = (int16_t *)calloc(MON_ECHO_LEN, sizeof(int16_t));
+    int monEchoWr = 0;
+
+    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    if (!ring)
+    {
+      if (monEcho) free(monEcho);
+      int16_t pb[128];
+      while (played < totalSamples)
+      {
+        int32_t rem = totalSamples - played;
+        int n = (int)(rem < 128 ? rem : 128);
+        int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
+        if (got == 0) break;
+        for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        mixMoodInto(pb, got);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
+        played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) break;
+      }
+      f.close();
+      closeMoodPlayback();
+      stopTxAndFlush();
+      return;
+    }
+
+    const int FS = 128;
+    int16_t fstage[FS];
+    int fstageIdx = 0, fstageLen = 0;
+    int32_t fileConsumed = 0;
+    int32_t pitchWPos = 0;
+    float pitchRPos = 0.0f, pitchRPos2 = 0.0f;
+    int pitchFade = 0;
+
+    while (pitchWPos < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+    {
+      if (fstageIdx >= fstageLen)
+      {
+        int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+        fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+        fstageIdx = 0;
+        if (fstageLen == 0) break;
+      }
+      ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+      pitchWPos++; fileConsumed++;
+    }
+
+    int16_t outBuf[FS];
+    int outIdx = 0;
+    bool cancelled = false;
+
+    while (played < totalSamples && !cancelled)
+    {
+      if (fileConsumed < totalSamples)
+      {
+        if (fstageIdx >= fstageLen)
+        {
+          int32_t _rem = totalSamples - fileConsumed;
+          int want = (int)(_rem < FS ? _rem : FS);
+          fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+          fstageIdx = 0;
+        }
+        if (fstageIdx < fstageLen)
+        {
+          ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+          pitchWPos++; fileConsumed++;
+        }
+      }
+
+      float outF;
+      if (pitchFade > 0)
+      {
+        float alpha = (float)pitchFade / PB_FADE;
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr1 = pitchRPos - floorf(pitchRPos);
+        float s1 = (1.0f - fr1) * ring[i0] + fr1 * ring[(i0 + 1) % PB_LEN];
+        int j0 = (int)pitchRPos2 % PB_LEN;
+        float fr2 = pitchRPos2 - floorf(pitchRPos2);
+        float s2 = (1.0f - fr2) * ring[j0] + fr2 * ring[(j0 + 1) % PB_LEN];
+        outF = (1.0f - alpha) * s1 + alpha * s2;
+        pitchRPos2 += PB_RATE; pitchFade--;
+      }
+      else
+      {
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr = pitchRPos - floorf(pitchRPos);
+        outF = (1.0f - fr) * ring[i0] + fr * ring[(i0 + 1) % PB_LEN];
+      }
+      pitchRPos += PB_RATE;
+
+      if ((pitchWPos - (int)pitchRPos) > PB_LEN / 2)
+      {
+        pitchRPos2 = pitchRPos;
+        pitchRPos += (float)PB_GRAIN;
+        pitchFade = PB_FADE;
+      }
+
+      if (pitchWPos > PB_LEN * 16)
+      {
+        int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
+        pitchWPos -= sub;
+        pitchRPos -= (float)sub;
+        pitchRPos2 -= (float)sub;
+      }
+
+      // Apply echo on top of pitch-shifted sample
+      int32_t pitched = (int32_t)outF;
+      if (pitched > INT16_MAX) pitched = INT16_MAX;
+      if (pitched < INT16_MIN) pitched = INT16_MIN;
+      int32_t out = pitched + (int32_t)(monEcho[monEchoWr] * MON_DECAY);
+      if (out > INT16_MAX) out = INT16_MAX;
+      if (out < INT16_MIN) out = INT16_MIN;
+      monEcho[monEchoWr] = (int16_t)out;
+      monEchoWr = (monEchoWr + 1) % MON_ECHO_LEN;
+
+      outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
+
+      if (outIdx >= FS)
+      {
+        mixMoodInto(outBuf, outIdx);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+        outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) cancelled = true;
+      }
+      played++;
+    }
+
+    if (outIdx > 0)
+    {
+      mixMoodInto(outBuf, outIdx);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+
+    free(ring);
+    if (monEcho) free(monEcho);
+    f.close();
+    closeMoodPlayback();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Alien: pitch-up granular + ring modulation
+  if (fx == 9)
+  {
+    int32_t played = 0;
+    const int   PB_LEN   = 2048;
+    const int   PB_GRAIN = 441;
+    const int   PB_FADE  = 48;
+    const int   PB_GAP   = 100;
+    const float PB_RATE  = 1.5f;
+    const float RING_FREQ = 50.0f;
+    float ringPhase = 0.0f;
+
+    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    if (!ring)
+    {
+      int16_t pb[128];
+      while (played < totalSamples)
+      {
+        int32_t rem = totalSamples - played;
+        int n = (int)(rem < 128 ? rem : 128);
+        int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
+        if (got == 0) break;
+        for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        mixMoodInto(pb, got);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
+        played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) break;
+      }
+      f.close();
+      closeMoodPlayback();
+      stopTxAndFlush();
+      return;
+    }
+
+    const int FS = 128;
+    int16_t fstage[FS];
+    int fstageIdx = 0, fstageLen = 0;
+    int32_t fileConsumed = 0;
+    int32_t pitchWPos = 0;
+    float pitchRPos = 0.0f, pitchRPos2 = 0.0f;
+    int pitchFade = 0;
+
+    while (pitchWPos < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+    {
+      if (fstageIdx >= fstageLen)
+      {
+        int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+        fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+        fstageIdx = 0;
+        if (fstageLen == 0) break;
+      }
+      ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+      pitchWPos++; fileConsumed++;
+    }
+
+    int16_t outBuf[FS];
+    int outIdx = 0;
+    bool cancelled = false;
+
+    while (played < totalSamples && !cancelled)
+    {
+      while ((pitchWPos - (int)pitchRPos) < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+      {
+        if (fstageIdx >= fstageLen)
+        {
+          int32_t _rem = totalSamples - fileConsumed;
+          int want = (int)(_rem < FS ? _rem : FS);
+          fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+          fstageIdx = 0;
+          if (fstageLen == 0) break;
+        }
+        ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+        pitchWPos++; fileConsumed++;
+      }
+
+      float outF;
+      if (pitchFade > 0)
+      {
+        float alpha = (float)pitchFade / PB_FADE;
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr1 = pitchRPos - floorf(pitchRPos);
+        float s1 = (1.0f - fr1) * ring[i0] + fr1 * ring[(i0 + 1) % PB_LEN];
+        int j0 = (int)pitchRPos2 % PB_LEN;
+        float fr2 = pitchRPos2 - floorf(pitchRPos2);
+        float s2 = (1.0f - fr2) * ring[j0] + fr2 * ring[(j0 + 1) % PB_LEN];
+        outF = (1.0f - alpha) * s1 + alpha * s2;
+        pitchRPos2 += PB_RATE; pitchFade--;
+      }
+      else
+      {
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr = pitchRPos - floorf(pitchRPos);
+        outF = (1.0f - fr) * ring[i0] + fr * ring[(i0 + 1) % PB_LEN];
+      }
+      pitchRPos += PB_RATE;
+
+      if ((pitchWPos - (int)pitchRPos) < PB_GAP)
+      {
+        pitchRPos2 = pitchRPos;
+        pitchRPos -= (float)PB_GRAIN;
+        pitchFade = PB_FADE;
+      }
+
+      if (pitchWPos > PB_LEN * 16)
+      {
+        int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
+        pitchWPos -= sub;
+        pitchRPos -= (float)sub;
+        pitchRPos2 -= (float)sub;
+      }
+
+      // Ring mod applied to pitch-shifted output
+      float mod = sinf(2.0f * 3.14159265f * ringPhase);
+      ringPhase += RING_FREQ / SAMPLE_RATE;
+      if (ringPhase >= 1.0f) ringPhase -= 1.0f;
+      int32_t out = (int32_t)(outF * mod);
+      if (out > INT16_MAX) out = INT16_MAX;
+      if (out < INT16_MIN) out = INT16_MIN;
+
       outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
 
       if (outIdx >= FS)
@@ -1720,7 +2073,7 @@ static int showMoodSubMenu()
 
     if (x != 0 && now - lastMoveMs > 200)
     {
-      sel = (sel + x + 5) % 5;
+      sel = (sel + x + MOOD_COUNT) % MOOD_COUNT;
       lastMoveMs = now;
     }
 
@@ -1987,7 +2340,7 @@ void runMenuAction(int item)
       int slot = showSlotSubMenu("Stored Play", longSlotPath, 2);
       if (slot < 0) break;
       int fx = showLongPlayFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
       g_waveform_visible = true;
@@ -2151,7 +2504,7 @@ static bool loadMoodTrack(int mood)
   g_mood_data_start = 0;
   g_mood_data_size  = 0;
   if (mood == 0) return true;
-  if (mood < 1 || mood > 4) { g_mood = 0; return false; }
+  if (mood < 1 || mood >= MOOD_COUNT) { g_mood = 0; return false; }
 
   const char *path = MOOD_PATHS[mood];
   File f = LittleFS.open(path, "r");
