@@ -173,6 +173,26 @@ static const uint8_t ICON_SETTINGS[] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+// Eighth note (quaver) = Mood Music icon
+static const uint8_t ICON_MOOD[] PROGMEM = {
+  0x0F, 0xC0,  // stem top + flag
+  0x08, 0xC0,
+  0x08, 0x40,
+  0x08, 0x00,
+  0x08, 0x00,
+  0x08, 0x00,
+  0x08, 0x00,
+  0x08, 0x00,
+  0x08, 0x00,
+  0x18, 0x00,
+  0x3C, 0x00,
+  0x7E, 0x00,  // note head
+  0x7E, 0x00,
+  0x3C, 0x00,
+  0x00, 0x00,
+  0x00, 0x00,
+};
+
 // Stacked disks = Storage/Database icon
 static const uint8_t ICON_STORAGE[] PROGMEM = {
   0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
@@ -192,11 +212,12 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   // Storage sub-menu items (indices 6-7)
   ICON_FLASH_REC,   // MENU_LONG_REC  (Stored Rec)
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY (Stored Play)
-  // Settings sub-menu items (indices 8-10)
+  // Settings sub-menu items (indices 8-11)
   ICON_VOLUME,      // MENU_VOLUME
   ICON_FEEDBACK,    // MENU_FEEDBACK
   ICON_LIVE_FX,     // MENU_LIVE_GAIN
-  // Effects sub-menu items (indices 11+)
+  ICON_MOOD,        // MENU_MOOD
+  // Effects sub-menu items (indices 12+)
   ICON_REVERSE,
   ICON_PITCH,
   ICON_ECHO,

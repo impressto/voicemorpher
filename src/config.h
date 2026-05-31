@@ -37,6 +37,12 @@
 #define WAVEFORM_HEIGHT 196
 #endif
 
+// Background mood music mix level (0.0 = silent, 1.0 = full scale).
+// Lower values keep music clearly in the background behind the voice.
+#ifndef MOOD_MUSIC_GAIN
+#define MOOD_MUSIC_GAIN 0.2f
+#endif
+
 // Enable a light post-recording smoothing filter to reduce microphone crackle.
 #ifndef ENABLE_AUDIO_CLEANING
 #define ENABLE_AUDIO_CLEANING 1
