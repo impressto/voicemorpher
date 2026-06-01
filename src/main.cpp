@@ -66,6 +66,7 @@ enum MenuItem
   MENU_PASSTHROUGH,
   MENU_STORAGE,
   MENU_SETTINGS,
+  MENU_MOOD,
   MENU_ROOT_COUNT,
 
   // Storage sub-menu items (MENU_ROOT_COUNT to MENU_STORAGE_COUNT-1)
@@ -77,7 +78,7 @@ enum MenuItem
   MENU_VOLUME = MENU_STORAGE_COUNT,
   MENU_FEEDBACK,
   MENU_LIVE_GAIN,
-  MENU_MOOD,
+  MENU_MIC_GAIN,
   MENU_SETTINGS_COUNT,
 
   // Effects sub-menu items (MENU_SETTINGS_COUNT to MENU_COUNT-1)
@@ -124,6 +125,7 @@ static const char *menuLabels[] = {
   "Live FX",
   "Storage",
   "Settings",
+  "Mood Music",
   // Storage sub-menu items
   "Stored Rec",
   "Stored Play",
@@ -131,7 +133,7 @@ static const char *menuLabels[] = {
   "Volume",
   "Feedback",
   "Live Gain",
-  "Mood Music",
+  "Mic Gain",
   // Effects sub-menu items
   "Reverse",
   "Pitch",
@@ -629,6 +631,10 @@ static float s_gateLevel      = PASSTHROUGH_GATE_THRESHOLD / 5000.0f;
 // Range 0.5-6.0x; default 2.5x keeps headroom below the feedback threshold.
 static float g_live_gain      = 2.5f;
 static float s_liveGainLevel  = (2.5f - 0.5f) / 5.5f;
+// Mic input gain: software pre-amp applied to raw I2S samples during recording.
+// <1.0 reduces clipping on loud sources; >1.0 boosts weak mics (normalization handles quiet mics too).
+static float g_mic_gain       = 1.0f;
+static float s_micGainLevel   = (1.0f - 0.1f) / 1.9f;  // slider maps 0.1x–2.0x
 // volume: maps [0,1] to gain [0.5, 10.0]; 0.579 ≈ DEFAULT_PLAYBACK_GAIN=6.0
 static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
@@ -642,7 +648,8 @@ static uint32_t g_mood_data_start = 0;   // byte offset of PCM data in WAV file
 static uint32_t g_mood_data_size  = 0;   // total PCM bytes
 static uint32_t g_mood_byte_pos   = 0;   // current byte position within PCM data (for looping)
 static File     g_mood_file;             // open only during active playback
-static const float MOOD_GAIN = MOOD_MUSIC_GAIN;
+static float g_mood_gain    = MOOD_MUSIC_GAIN;  // runtime-adjustable, saved to NVS
+static float s_moodVolLevel = MOOD_MUSIC_GAIN / 0.5f; // 0-1 maps gain 0.0-0.5
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
 // Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
@@ -976,6 +983,16 @@ static void recordToLittleFS(int durationSecs, const char *path)
     int samplesRead = bytesRead / sizeof(int16_t);
     if (samplesRead > 0)
     {
+      if (g_mic_gain != 1.0f)
+      {
+        for (int i = 0; i < samplesRead; ++i)
+        {
+          int32_t s = (int32_t)(stage[i] * g_mic_gain);
+          if (s > INT16_MAX) s = INT16_MAX;
+          if (s < INT16_MIN) s = INT16_MIN;
+          stage[i] = (int16_t)s;
+        }
+      }
       f.write((uint8_t *)stage, samplesRead * sizeof(int16_t));
       written += samplesRead;
     }
@@ -1053,7 +1070,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const int   PB_GAP   = 100;   // min read-to-write gap
     const float PB_RATE  = 1.5f;  // pitch factor (1 fifth up)
 
-    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring)
     {
       // fallback: plain playback
@@ -1209,7 +1226,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const int   PB_GAP   = 100;
     const float PB_RATE  = 0.67f;  // pitch factor (1 fifth down)
 
-    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring)
     {
       int16_t pb[128];
@@ -1409,10 +1426,10 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
 
     const int MON_ECHO_LEN = (int)(0.30f * SAMPLE_RATE) + 1;
     const float MON_DECAY  = 0.45f;
-    int16_t *monEcho = (int16_t *)calloc(MON_ECHO_LEN, sizeof(int16_t));
+    int16_t *monEcho = (int16_t *)heap_caps_calloc(MON_ECHO_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     int monEchoWr = 0;
 
-    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring)
     {
       if (monEcho) free(monEcho);
@@ -1568,7 +1585,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const float RING_FREQ = 50.0f;
     float ringPhase = 0.0f;
 
-    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring)
     {
       int16_t pb[128];
@@ -1712,7 +1729,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   int echoWr = 0;
   if (fx == 1)
   {
-    echoBuf = (int16_t *)calloc(ECHO_LEN, sizeof(int16_t));
+    echoBuf = (int16_t *)heap_caps_calloc(ECHO_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!echoBuf) fx = 0;
   }
 
@@ -1723,7 +1740,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   float chorusPhase = 0.0f;
   if (fx == 4)
   {
-    chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+    chorusBuf = (int16_t *)heap_caps_calloc(CHORUS_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!chorusBuf) fx = 0;
   }
 
@@ -2042,7 +2059,8 @@ static int showEffectsSubMenu()
   }
 }
 
-static int showMoodSubMenu()
+// Mood picker: joystick X cycles tracks, Y cancels, button confirms.
+static int showMoodPickerScreen()
 {
   int sel = g_mood;
   unsigned long lastMoveMs = 0;
@@ -2050,7 +2068,7 @@ static int showMoodSubMenu()
 
   int prevSel = -1;
   tft.fillScreen(C_BG);
-  drawHeader("Mood Music");
+  drawHeader("Select Mood");
   drawHints("< X: choose >", "Y: back   Btn: set");
 
   while (true)
@@ -2088,6 +2106,101 @@ static int showMoodSubMenu()
   }
 }
 
+// Top-level Mood Music sub-menu: Select Mood + Mood Volume
+static void runMoodMenu()
+{
+  static const char  *items[]  = { "Select Mood", "Mood Volume" };
+  static const uint8_t *icons[] = { ICON_MOOD, ICON_VOLUME };
+  const int COUNT = 2;
+  int sel = 0;
+  unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
+
+  int prevSel = -1;
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < COUNT; ++i)
+      {
+        int16_t y = i * ITEM_H;
+        if (i == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, TFT_WHITE);
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, 0xDEFB);
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.setCursor(28, y + 5);
+        tft.print(items[i]);
+      }
+
+      // Status hints showing current state
+      char hint1[32], hint2[32];
+      snprintf(hint1, sizeof(hint1), "Mood: %s", MOOD_NAMES[g_mood]);
+      snprintf(hint2, sizeof(hint2), "Vol: %.0f%%   < X:back", s_moodVolLevel * 100.0f);
+      drawHints(hint1, hint2);
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return;
+      sel = (sel + (y < 0 ? -1 : 1) + COUNT) % COUNT;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+
+      if (sel == 0)  // Select Mood
+      {
+        int newMood = showMoodPickerScreen();
+        if (newMood >= 0 && newMood != g_mood)
+        {
+          g_mood = newMood;
+          g_prefs.putInt("mood", g_mood);
+          drawStatus("Loading...", MOOD_NAMES[g_mood]);
+          loadMoodTrack(g_mood);
+        }
+      }
+      else  // Mood Volume
+      {
+        float lvl = showLevelSubMenu("Mood Volume", "Level", s_moodVolLevel, 0.0f, 100.0f, "%");
+        if (lvl >= 0.0f)
+        {
+          s_moodVolLevel = lvl;
+          g_mood_gain = lvl * 0.5f;
+          g_prefs.putFloat("mood_vol", g_mood_gain);
+          char info[32];
+          snprintf(info, sizeof(info), "Vol: %.0f%% saved", lvl * 100.0f);
+          drawStatus("Mood vol saved!", info);
+          delay(1000);
+        }
+      }
+      prevSel = -1;  // force redraw after returning
+    }
+    delay(10);
+  }
+}
+
 void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
@@ -2096,7 +2209,7 @@ void runMenuAction(int item)
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
       && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
-      && item != MENU_MOOD
+      && item != MENU_MIC_GAIN && item != MENU_MOOD
       && item != MENU_EFFECTS && item != MENU_STORAGE && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
@@ -2399,22 +2512,24 @@ void runMenuAction(int item)
       }
       break;
     }
-    case MENU_MOOD:
+    case MENU_MIC_GAIN:
     {
-      int sel = showMoodSubMenu();
-      if (sel >= 0)
+      float lvl = showLevelSubMenu("Mic Gain", "Sensitivity", s_micGainLevel, 0.1f, 2.0f, "x");
+      if (lvl >= 0.0f)
       {
-        g_mood = sel;
-        g_prefs.putInt("mood", g_mood);
+        s_micGainLevel = lvl;
+        g_mic_gain = 0.1f + lvl * 1.9f;
+        g_prefs.putFloat("mic_gain", g_mic_gain);
         char info[32];
-        snprintf(info, sizeof(info), "Mood: %s", MOOD_NAMES[g_mood]);
-        drawStatus("Loading...", info);
-        loadMoodTrack(g_mood);
-        drawStatus("Mood saved!", info);
+        snprintf(info, sizeof(info), "Gain: %.2fx saved", g_mic_gain);
+        drawStatus("Mic gain saved!", info);
         delay(1000);
       }
       break;
     }
+    case MENU_MOOD:
+      runMoodMenu();
+      break;
     default:
       break;
   }
@@ -2581,7 +2696,7 @@ static void mixMoodInto(int16_t *buf, int n)
   }
 
   for (int i = 0; i < done; ++i) {
-    int32_t m = (int32_t)((float)mbuf[i] * MOOD_GAIN);
+    int32_t m = (int32_t)((float)mbuf[i] * g_mood_gain);
     int32_t s = (int32_t)buf[i] + m;
     if (s > INT16_MAX) s = INT16_MAX;
     if (s < INT16_MIN) s = INT16_MIN;
@@ -2914,6 +3029,17 @@ void recordToBuffer()
   Serial.printf("Recording complete. First 8 samples: %d %d %d %d %d %d %d %d\n",
     record_buffer[0], record_buffer[1], record_buffer[2], record_buffer[3],
     record_buffer[4], record_buffer[5], record_buffer[6], record_buffer[7]);
+  // Apply mic gain before cleaning/normalising so clipping headroom is set correctly.
+  if (g_mic_gain != 1.0f)
+  {
+    for (int i = 0; i < active_sample_count; ++i)
+    {
+      int32_t s = (int32_t)(record_buffer[i] * g_mic_gain);
+      if (s > INT16_MAX) s = INT16_MAX;
+      if (s < INT16_MIN) s = INT16_MIN;
+      record_buffer[i] = (int16_t)s;
+    }
+  }
   cleanRecording();
   normalizeRecording();
   g_has_recording = true;
@@ -3253,7 +3379,7 @@ void playMonster(float speed, float delaySec, float decay)
   // Because resampling changes the output length, a fixed-size delay buffer is used
   // rather than reading back into the original record_buffer.
   int delayLen = (int)(delaySec * SAMPLE_RATE) + 1;
-  int16_t *echoBuf = (int16_t *)calloc(delayLen, sizeof(int16_t));
+  int16_t *echoBuf = (int16_t *)heap_caps_calloc(delayLen, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (!echoBuf)
   {
     playResample(speed);
@@ -3307,7 +3433,7 @@ void playChorus(float rate, float depth)
   // LFO sweeps a short delay (10–30 ms) at the given rate in Hz.
   // depth in [0,1] scales the wet/dry mix: 0 = subtle, 1 = full chorus.
   const int CHORUS_LEN = (int)(0.05f * SAMPLE_RATE) + 1;
-  int16_t *chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+  int16_t *chorusBuf = (int16_t *)heap_caps_calloc(CHORUS_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (!chorusBuf)
   {
     playBufferSimple();
@@ -3393,7 +3519,7 @@ void passthroughWithEffect(int fx)
   int echoWr = 0;
   if (fx == 1)
   {
-    echoBuf = (int16_t *)calloc(ECHO_LEN, sizeof(int16_t));
+    echoBuf = (int16_t *)heap_caps_calloc(ECHO_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!echoBuf) fx = 0;
   }
 
@@ -3404,7 +3530,7 @@ void passthroughWithEffect(int fx)
   float chorusPhase = 0.0f;
   if (fx == 4)
   {
-    chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+    chorusBuf = (int16_t *)heap_caps_calloc(CHORUS_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!chorusBuf) fx = 0;
   }
 
@@ -3430,7 +3556,7 @@ void passthroughWithEffect(int fx)
   int      pitchFade  = 0;
   if (fx == 7 || fx == 8)
   {
-    pitchRing = (int16_t *)calloc(PITCH_BUF, sizeof(int16_t));
+    pitchRing = (int16_t *)heap_caps_calloc(PITCH_BUF, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!pitchRing) fx = 0;
   }
 
@@ -3777,8 +3903,16 @@ void setup()
   g_live_gain     = g_prefs.getFloat("live_gain", 2.5f);
   s_liveGainLevel = (g_live_gain - 0.5f) / 5.5f;
   Serial.printf("✓ Live gain loaded: %.2fx\n", g_live_gain);
-  g_mood = g_prefs.getInt("mood", 0);
-  Serial.printf("✓ Mood loaded: %d (%s)\n", g_mood, MOOD_NAMES[g_mood]);
+  g_mic_gain      = g_prefs.getFloat("mic_gain", 1.0f);
+  s_micGainLevel  = (g_mic_gain - 0.1f) / 1.9f;
+  if (s_micGainLevel < 0.0f) s_micGainLevel = 0.0f;
+  if (s_micGainLevel > 1.0f) s_micGainLevel = 1.0f;
+  Serial.printf("✓ Mic gain loaded: %.2fx\n", g_mic_gain);
+  g_mood      = g_prefs.getInt("mood", 0);
+  g_mood_gain = g_prefs.getFloat("mood_vol", MOOD_MUSIC_GAIN);
+  s_moodVolLevel = g_mood_gain / 0.5f;
+  if (s_moodVolLevel > 1.0f) s_moodVolLevel = 1.0f;
+  Serial.printf("✓ Mood loaded: %d (%s), gain=%.2f\n", g_mood, MOOD_NAMES[g_mood], g_mood_gain);
 
   LittleFS.begin(true);
   if (loadRecordingAuto())

@@ -193,6 +193,26 @@ static const uint8_t ICON_MOOD[] PROGMEM = {
   0x00, 0x00,
 };
 
+// Microphone body + stand = Mic Gain icon
+static const uint8_t ICON_MIC_SENS[] PROGMEM = {
+  0x06, 0x00,  // mic capsule top
+  0x0F, 0x00,
+  0x1F, 0x80,
+  0x1B, 0x80,
+  0x1B, 0x80,
+  0x1B, 0x80,
+  0x1F, 0x80,
+  0x0F, 0x00,  // capsule bottom
+  0x06, 0x00,  // stem
+  0x3F, 0xC0,  // stand arc
+  0x06, 0x00,  // stem
+  0x1F, 0x80,  // base
+  0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00,
+};
+
 // Stacked disks = Storage/Database icon
 static const uint8_t ICON_STORAGE[] PROGMEM = {
   0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
@@ -202,22 +222,23 @@ static const uint8_t ICON_STORAGE[] PROGMEM = {
 };
 
 static const uint8_t* const MENU_ICONS[] PROGMEM = {
-  // Root menu items (indices 0-5)
+  // Root menu items (indices 0-6)
   ICON_RECORD,      // MENU_RECORD
   ICON_PLAY,        // MENU_PLAY
   ICON_EFFECTS,     // MENU_EFFECTS
   ICON_LIVE_FX,     // MENU_PASSTHROUGH
   ICON_STORAGE,     // MENU_STORAGE
   ICON_SETTINGS,    // MENU_SETTINGS
-  // Storage sub-menu items (indices 6-7)
+  ICON_MOOD,        // MENU_MOOD
+  // Storage sub-menu items (indices 7-8)
   ICON_FLASH_REC,   // MENU_LONG_REC  (Stored Rec)
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY (Stored Play)
-  // Settings sub-menu items (indices 8-11)
+  // Settings sub-menu items (indices 9-12)
   ICON_VOLUME,      // MENU_VOLUME
   ICON_FEEDBACK,    // MENU_FEEDBACK
   ICON_LIVE_FX,     // MENU_LIVE_GAIN
-  ICON_MOOD,        // MENU_MOOD
-  // Effects sub-menu items (indices 12+)
+  ICON_MIC_SENS,    // MENU_MIC_GAIN
+  // Effects sub-menu items (indices 13+)
   ICON_REVERSE,
   ICON_PITCH,
   ICON_ECHO,
