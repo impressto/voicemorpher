@@ -62,7 +62,6 @@ enum MenuItem
   // Root menu items (0 to MENU_ROOT_COUNT-1)
   MENU_RECORD,
   MENU_PLAY,
-  MENU_EFFECTS,
   MENU_PASSTHROUGH,
   MENU_LONG_REC,
   MENU_LONG_PLAY,
@@ -120,7 +119,6 @@ static const char *menuLabels[] = {
   // Root menu items
   "Record",
   "Play",
-  "Effects",
   "Live FX",
   "Stored Rec",
   "Stored Play",
@@ -190,6 +188,7 @@ static bool loadMoodTrack(int mood);
 static void openMoodPlayback();
 static void closeMoodPlayback();
 static void mixMoodInto(int16_t *buf, int n);
+static int showIconList(const char *const *labels, const uint8_t *const *icons, int count, int &sel);
 
 static int readJoystickAxis(int pin)
 {
@@ -762,45 +761,16 @@ static int showPassthroughFxSubMenu()
 
 static int showLongPlayFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien", "Telephone" };
-  const int NUM_CHOICES = 11;
-  int sel = 0;
-  unsigned long lastMoveMs = 0;
-  while (isJoystickButtonPressed()) delay(10);
-
-  int prevSel = -1;
-  tft.fillScreen(C_BG);
-  drawHeader("Stored Play FX");
-  drawHints("< X: choose >", "Btn: play");
-
-  while (true)
-  {
-    if (sel != prevSel)
-    {
-      prevSel = sel;
-      tft.fillRect(4, 90, TFT_W - 8, 22, C_BG);
-      tft.setTextColor(TFT_CYAN);
-      tft.setTextSize(2);
-      tft.setCursor(8, 90);
-      char valBuf[32];
-      snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
-      tft.print(valBuf);
-    }
-
-    int x = readJoystickAxis(JOY_X_PIN);
-    unsigned long now = millis();
-    if (x != 0 && now - lastMoveMs > 200)
-    {
-      sel = (sel + x + NUM_CHOICES) % NUM_CHOICES;
-      lastMoveMs = now;
-    }
-    if (isJoystickButtonPressed())
-    {
-      while (isJoystickButtonPressed()) delay(10);
-      return sel;
-    }
-    delay(20);
-  }
+  static const char *labels[] = {
+    "Plain",    "Echo",      "Star Fghtr", "Tremolo", "Chorus",
+    "Pitch Up", "Pitch Dn",  "Stutter",    "Monster", "Alien",  "Telephone"
+  };
+  static const uint8_t *icons[] = {
+    ICON_PLAY,    ICON_ECHO,    ICON_RINGMOD,  ICON_TREMOLO, ICON_CHORUS,
+    ICON_PITCH,   ICON_PITCH,   ICON_STUTTER,  ICON_MONSTER, ICON_ALIEN, ICON_TELEPHONE
+  };
+  static int sel = 0;
+  return showIconList(labels, icons, 11, sel);
 }
 
 static const char *autoSlotPath() { return "/rec_auto.pcm"; }
@@ -1926,36 +1896,35 @@ static int showSettingsSubMenu()
   }
 }
 
-static int showEffectsSubMenu()
+// Shared scrollable icon-list helper used by both Play and Stored Play FX pickers.
+// labels/icons must have 'count' entries. Returns selected index or -1 (back).
+static int showIconList(const char *const *labels, const uint8_t *const *icons,
+                        int count, int &sel)
 {
-  static int sel = MENU_SETTINGS_COUNT;
+  const int VISIBLE = 8;
   unsigned long lastMoveMs = 0;
-  const int effectCount = MENU_COUNT - MENU_SETTINGS_COUNT;
+  int prevSel = -2;
   while (isJoystickButtonPressed()) delay(10);
-
-  int prevSel2 = -1;
 
   while (true)
   {
-    if (sel != prevSel2)
+    if (sel != prevSel)
     {
-      prevSel2 = sel;
-      const int visibleCount = 8;
-      int relSel = sel - MENU_SETTINGS_COUNT;
-      int startIdx = relSel - visibleCount / 2;
+      prevSel = sel;
+      int startIdx = sel - VISIBLE / 2;
       if (startIdx < 0) startIdx = 0;
-      if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
+      if (startIdx > count - VISIBLE) startIdx = count - VISIBLE;
       if (startIdx < 0) startIdx = 0;
 
       tft.fillScreen(C_BG);
       tft.setTextSize(2);
 
-      for (int i = 0; i < visibleCount && (startIdx + i) < effectCount; ++i)
+      for (int i = 0; i < VISIBLE && (startIdx + i) < count; ++i)
       {
-        int itemEnum = MENU_SETTINGS_COUNT + startIdx + i;
+        int idx = startIdx + i;
         int16_t y = i * ITEM_H;
         uint16_t iconColor;
-        if (itemEnum == sel)
+        if (idx == sel)
         {
           fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
           tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
@@ -1970,25 +1939,24 @@ static int showEffectsSubMenu()
           iconColor = 0xDEFB;
         }
         tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
-        tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
+        tft.drawBitmap(6, y + 5, icons[idx], 16, 16, iconColor);
         tft.setCursor(28, y + 5);
-        tft.print(menuLabels[itemEnum]);
+        tft.print(labels[idx]);
       }
 
-      // Scroll indicators
       if (startIdx > 0)
       {
         tft.setTextColor(TFT_CYAN); tft.setTextSize(1);
-        tft.setCursor(TFT_W - 10, 2);  tft.print("^");
+        tft.setCursor(TFT_W - 10, 2); tft.print("^");
       }
-      if (startIdx + visibleCount < effectCount)
+      if (startIdx + VISIBLE < count)
       {
         tft.setTextColor(TFT_CYAN); tft.setTextSize(1);
-        tft.setCursor(TFT_W - 10, visibleCount * ITEM_H - 8); tft.print("v");
+        tft.setCursor(TFT_W - 10, VISIBLE * ITEM_H - 8); tft.print("v");
       }
       tft.setTextSize(1);
       tft.setTextColor(COL_GRAY);
-      tft.setCursor(4, visibleCount * ITEM_H + 4);
+      tft.setCursor(4, min(count, VISIBLE) * ITEM_H + 4);
       tft.print("< X: back");
     }
 
@@ -2000,8 +1968,8 @@ static int showEffectsSubMenu()
     {
       if (x < 0) return -1;
       sel += (y < 0 ? -1 : 1);
-      if (sel < MENU_SETTINGS_COUNT) sel = MENU_SETTINGS_COUNT;
-      if (sel >= MENU_COUNT) sel = MENU_COUNT - 1;
+      if (sel < 0)     sel = 0;
+      if (sel >= count) sel = count - 1;
       lastMoveMs = now;
     }
 
@@ -2014,51 +1982,31 @@ static int showEffectsSubMenu()
   }
 }
 
-// Mood picker: joystick X cycles tracks, Y cancels, button confirms.
+// Play FX picker: index 0 = Plain, 1-11 = effects (maps to MENU_SETTINGS_COUNT + idx - 1).
+static int showPlaySubMenu()
+{
+  static const char *labels[] = {
+    "Plain",    "Reverse",  "Pitch",   "Echo",      "Ring Mod",
+    "Stutter",  "Tremolo",  "Haunted", "Alien",     "Monster",
+    "Chorus",   "Telephone"
+  };
+  static const uint8_t *icons[] = {
+    ICON_PLAY,    ICON_REVERSE,  ICON_PITCH,    ICON_ECHO,    ICON_RINGMOD,
+    ICON_STUTTER, ICON_TREMOLO,  ICON_HAUNTED,  ICON_ALIEN,   ICON_MONSTER,
+    ICON_CHORUS,  ICON_TELEPHONE
+  };
+  static int sel = 0;
+  return showIconList(labels, icons, 12, sel);
+}
+
+// Mood picker: scrollable icon list, opens at currently active mood.
 static int showMoodPickerScreen()
 {
-  int sel = g_mood;
-  unsigned long lastMoveMs = 0;
-  while (isJoystickButtonPressed()) delay(10);
-
-  int prevSel = -1;
-  tft.fillScreen(C_BG);
-  drawHeader("Select Mood");
-  drawHints("< X: choose >", "Y: back   Btn: set");
-
-  while (true)
-  {
-    if (sel != prevSel)
-    {
-      prevSel = sel;
-      tft.fillRect(4, 60, TFT_W - 8, 100, C_BG);
-      tft.setTextColor(TFT_CYAN);
-      tft.setTextSize(2);
-      tft.setCursor(8, 90);
-      char buf[32];
-      snprintf(buf, sizeof(buf), "Mood: %s", MOOD_NAMES[sel]);
-      tft.print(buf);
-    }
-
-    int x = readJoystickAxis(JOY_X_PIN);
-    int y = readJoystickAxis(JOY_Y_PIN);
-    unsigned long now = millis();
-
-    if (x != 0 && now - lastMoveMs > 200)
-    {
-      sel = (sel + x + MOOD_COUNT) % MOOD_COUNT;
-      lastMoveMs = now;
-    }
-
-    if (y != 0) return -1;
-
-    if (isJoystickButtonPressed())
-    {
-      while (isJoystickButtonPressed()) delay(10);
-      return sel;
-    }
-    delay(20);
-  }
+  static const uint8_t *icons[] = {
+    ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD
+  };
+  int sel = g_mood;  // start at current selection each time
+  return showIconList(MOOD_NAMES, icons, MOOD_COUNT, sel);
 }
 
 // Top-level Mood Music sub-menu: Select Mood + Mood Volume
@@ -2165,7 +2113,7 @@ void runMenuAction(int item)
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
       && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
       && item != MENU_MIC_GAIN && item != MENU_MOOD
-      && item != MENU_EFFECTS && item != MENU_SETTINGS)
+      && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -2188,18 +2136,22 @@ void runMenuAction(int item)
       break;
     }
     case MENU_PLAY:
-      g_waveform_visible = true;
-      drawWaveformScreen("Play");
-      playBufferSimple();
-      g_waveform_visible = false;
-      break;
-    case MENU_EFFECTS:
     {
       while (true)
       {
-        int fx = showEffectsSubMenu();
-        if (fx < 0) break;
-        runMenuAction(fx);
+        int sel = showPlaySubMenu();
+        if (sel < 0) break;
+        if (sel == 0)
+        {
+          g_waveform_visible = true;
+          drawWaveformScreen("Play");
+          playBufferSimple();
+          g_waveform_visible = false;
+        }
+        else
+        {
+          runMenuAction(MENU_SETTINGS_COUNT + sel - 1);
+        }
       }
       break;
     }

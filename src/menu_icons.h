@@ -245,7 +245,6 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   // Root menu items (indices 0-6)
   ICON_RECORD,      // MENU_RECORD
   ICON_PLAY,        // MENU_PLAY
-  ICON_EFFECTS,     // MENU_EFFECTS
   ICON_LIVE_FX,     // MENU_PASSTHROUGH
   ICON_FLASH_REC,   // MENU_LONG_REC
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY
