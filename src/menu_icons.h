@@ -213,6 +213,26 @@ static const uint8_t ICON_MIC_SENS[] PROGMEM = {
   0x00, 0x00,
 };
 
+// Diagonal telephone handset = Telephone effect icon
+static const uint8_t ICON_TELEPHONE[] PROGMEM = {
+  0x38, 0x00,  // earpiece
+  0x7C, 0x00,
+  0x38, 0x00,
+  0x1C, 0x00,
+  0x0E, 0x00,  // handle
+  0x07, 0x00,
+  0x03, 0x80,
+  0x01, 0xC0,
+  0x00, 0xE0,
+  0x00, 0x70,
+  0x00, 0x38,  // mouthpiece
+  0x00, 0x7C,
+  0x00, 0x38,
+  0x00, 0x00,
+  0x00, 0x00,
+  0x00, 0x00,
+};
+
 // Stacked disks = Storage/Database icon
 static const uint8_t ICON_STORAGE[] PROGMEM = {
   0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
@@ -227,13 +247,11 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_PLAY,        // MENU_PLAY
   ICON_EFFECTS,     // MENU_EFFECTS
   ICON_LIVE_FX,     // MENU_PASSTHROUGH
-  ICON_STORAGE,     // MENU_STORAGE
-  ICON_SETTINGS,    // MENU_SETTINGS
+  ICON_FLASH_REC,   // MENU_LONG_REC
+  ICON_FLASH_PLAY,  // MENU_LONG_PLAY
   ICON_MOOD,        // MENU_MOOD
-  // Storage sub-menu items (indices 7-8)
-  ICON_FLASH_REC,   // MENU_LONG_REC  (Stored Rec)
-  ICON_FLASH_PLAY,  // MENU_LONG_PLAY (Stored Play)
-  // Settings sub-menu items (indices 9-12)
+  ICON_SETTINGS,    // MENU_SETTINGS
+  // Settings sub-menu items
   ICON_VOLUME,      // MENU_VOLUME
   ICON_FEEDBACK,    // MENU_FEEDBACK
   ICON_LIVE_FX,     // MENU_LIVE_GAIN
@@ -249,4 +267,5 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_ALIEN,
   ICON_MONSTER,
   ICON_CHORUS,
+  ICON_TELEPHONE,
 };

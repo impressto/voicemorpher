@@ -64,15 +64,13 @@ enum MenuItem
   MENU_PLAY,
   MENU_EFFECTS,
   MENU_PASSTHROUGH,
-  MENU_STORAGE,
-  MENU_SETTINGS,
+  MENU_LONG_REC,
+  MENU_LONG_PLAY,
   MENU_MOOD,
+  MENU_SETTINGS,
   MENU_ROOT_COUNT,
 
-  // Storage sub-menu items (MENU_ROOT_COUNT to MENU_STORAGE_COUNT-1)
-  MENU_LONG_REC = MENU_ROOT_COUNT,
-  MENU_LONG_PLAY,
-  MENU_STORAGE_COUNT,
+  MENU_STORAGE_COUNT = MENU_ROOT_COUNT,  // Storage sub-menu removed; alias keeps Settings code intact
 
   // Settings sub-menu items (MENU_STORAGE_COUNT to MENU_SETTINGS_COUNT-1)
   MENU_VOLUME = MENU_STORAGE_COUNT,
@@ -92,6 +90,7 @@ enum MenuItem
   MENU_ALIEN,
   MENU_MONSTER,
   MENU_CHORUS,
+  MENU_TELEPHONE,
   MENU_COUNT
 };
 
@@ -123,12 +122,10 @@ static const char *menuLabels[] = {
   "Play",
   "Effects",
   "Live FX",
-  "Storage",
-  "Settings",
-  "Mood Music",
-  // Storage sub-menu items
   "Stored Rec",
   "Stored Play",
+  "Mood Music",
+  "Settings",
   // Settings sub-menu items
   "Volume",
   "Feedback",
@@ -145,6 +142,7 @@ static const char *menuLabels[] = {
   "Alien",
   "Monster",
   "Chorus",
+  "Telephone",
 };
 
 int currentMenu = 0;
@@ -184,6 +182,7 @@ void playHaunted(float delaySec, float decay);
 void playAlien(float speed, float ringFreq);
 void playMonster(float speed, float delaySec, float decay);
 void playChorus(float rate, float depth);
+void playTelephone(float hpHz);
 static int16_t applyPlaybackGain(int16_t sample);
 static void stopTxAndFlush();
 static void playRecordingDoneBlips();
@@ -622,7 +621,8 @@ static float s_tremoloLevel = 0.3f;
 static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
-static float s_chorusLevel   = 0.5f;
+static float s_chorusLevel    = 0.5f;
+static float s_telephoneLevel = 0.3f;  // 0→300 Hz (mild), 1→2000 Hz (very tinny)
 // Gate threshold for Live FX feedback suppression (runtime, saved to prefs)
 // Range 0-5000 on raw ADC scale; maps to s_gateLevel 0.0-1.0 for the slider.
 static float g_gate_threshold = PASSTHROUGH_GATE_THRESHOLD;
@@ -762,8 +762,8 @@ static int showPassthroughFxSubMenu()
 
 static int showLongPlayFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien" };
-  const int NUM_CHOICES = 10;
+  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien", "Telephone" };
+  const int NUM_CHOICES = 11;
   int sel = 0;
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
@@ -1744,12 +1744,23 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     if (!chorusBuf) fx = 0;
   }
 
-  // Phase accumulators for math-only effects
+  // Phase accumulators and filter state for math-only effects
   float ringPhase = 0.0f;
   float tremPhase = 0.0f;
   const float RING_FREQ  = 50.0f;
   const float TREM_RATE  = 6.0f;
   const float TREM_DEPTH = 0.85f;
+  // Telephone HP+LP filter state (fx==10)
+  float tel_hp_x1 = 0.0f, tel_hp_y1 = 0.0f, tel_lp_y1 = 0.0f;
+  float tel_hp_a  = 0.0f, tel_lp_b   = 0.0f;
+  if (fx == 10) {
+    const float PI2 = 2.0f * 3.14159265f;
+    const float DT  = 1.0f / SAMPLE_RATE;
+    float hp_tau  = 1.0f / (PI2 * 800.0f);   // ~800 Hz high-pass cutoff
+    tel_hp_a      = hp_tau / (hp_tau + DT);
+    float lp_tau  = 1.0f / (PI2 * 4000.0f);  // ~4 kHz low-pass ceiling
+    tel_lp_b      = DT    / (lp_tau + DT);
+  }
 
   const int CHUNK = 256;
   int16_t chunk[CHUNK];
@@ -1811,6 +1822,18 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         if (out < INT16_MIN) out = INT16_MIN;
         s = out;
       }
+      else if (fx == 10)  // telephone HP+LP band-pass
+      {
+        float x   = (float)s;
+        float yhp = tel_hp_a * (tel_hp_y1 + x - tel_hp_x1);
+        tel_hp_x1 = x; tel_hp_y1 = yhp;
+        float ylp = tel_lp_b * yhp + (1.0f - tel_lp_b) * tel_lp_y1;
+        tel_lp_y1 = ylp;
+        int32_t out = (int32_t)ylp;
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
 
       chunk[i] = applyPlaybackGain((int16_t)s);
     }
@@ -1831,75 +1854,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   stopTxAndFlush();
 }
 
-static int showStorageSubMenu()
-{
-  static int sel = MENU_ROOT_COUNT;
-  unsigned long lastMoveMs = 0;
-  const int storageCount = MENU_STORAGE_COUNT - MENU_ROOT_COUNT;
-  while (isJoystickButtonPressed()) delay(10);
 
-  int prevSel = -1;
-
-  while (true)
-  {
-    if (sel != prevSel)
-    {
-      prevSel = sel;
-      tft.fillScreen(C_BG);
-      tft.setTextSize(2);
-
-      for (int i = 0; i < storageCount; ++i)
-      {
-        int itemEnum = MENU_ROOT_COUNT + i;
-        int16_t y = i * ITEM_H;
-        uint16_t iconColor;
-        if (itemEnum == sel)
-        {
-          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
-          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
-          tft.setTextColor(TFT_WHITE);
-          iconColor = TFT_WHITE;
-        }
-        else
-        {
-          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
-          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
-          tft.setTextColor(0xDEFB);
-          iconColor = 0xDEFB;
-        }
-        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
-        tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
-        tft.setCursor(28, y + 5);
-        tft.print(menuLabels[itemEnum]);
-      }
-
-      tft.setTextSize(1);
-      tft.setTextColor(COL_GRAY);
-      tft.setCursor(4, storageCount * ITEM_H + 4);
-      tft.print("< X: back");
-    }
-
-    int y = readJoystickAxis(JOY_Y_PIN);
-    int x = readJoystickAxis(JOY_X_PIN);
-    unsigned long now = millis();
-
-    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
-    {
-      if (x < 0) return -1;
-      sel += (y < 0 ? -1 : 1);
-      if (sel < MENU_ROOT_COUNT) sel = MENU_ROOT_COUNT;
-      if (sel >= MENU_STORAGE_COUNT) sel = MENU_STORAGE_COUNT - 1;
-      lastMoveMs = now;
-    }
-
-    if (isJoystickButtonPressed())
-    {
-      while (isJoystickButtonPressed()) delay(10);
-      return sel;
-    }
-    delay(10);
-  }
-}
 
 static int showSettingsSubMenu()
 {
@@ -2210,7 +2165,7 @@ void runMenuAction(int item)
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
       && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
       && item != MENU_MIC_GAIN && item != MENU_MOOD
-      && item != MENU_EFFECTS && item != MENU_STORAGE && item != MENU_SETTINGS)
+      && item != MENU_EFFECTS && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -2245,16 +2200,6 @@ void runMenuAction(int item)
         int fx = showEffectsSubMenu();
         if (fx < 0) break;
         runMenuAction(fx);
-      }
-      break;
-    }
-    case MENU_STORAGE:
-    {
-      while (true)
-      {
-        int item = showStorageSubMenu();
-        if (item < 0) break;
-        runMenuAction(item);
       }
       break;
     }
@@ -2437,6 +2382,21 @@ void runMenuAction(int item)
       }
       break;
     }
+    case MENU_TELEPHONE:
+    {
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Telephone", "HP cutoff", s_telephoneLevel, 300.0f, 2000.0f, "Hz");
+        if (lvl < 0.0f) break;
+        s_telephoneLevel = lvl;
+        float hpHz = 300.0f + lvl * 1700.0f;
+        g_waveform_visible = true;
+        drawWaveformScreen("Telephone");
+        playTelephone(hpHz);
+        g_waveform_visible = false;
+      }
+      break;
+    }
     case MENU_LONG_REC:
     {
       int slot = showSlotSubMenu("Stored Rec", longSlotPath, 2);
@@ -2453,7 +2413,7 @@ void runMenuAction(int item)
       int slot = showSlotSubMenu("Stored Play", longSlotPath, 2);
       if (slot < 0) break;
       int fx = showLongPlayFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien" };
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien", "Telephone" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
       g_waveform_visible = true;
@@ -3483,6 +3443,57 @@ void playChorus(float rate, float depth)
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
   free(chorusBuf);
+  closeMoodPlayback();
+  stopTxAndFlush();
+}
+
+// HP+LP band-pass giving a telephone / tinny quality.
+// hpHz: high-pass cutoff (300–2000 Hz removes lows). LP fixed at 4 kHz to avoid shrillness.
+void playTelephone(float hpHz)
+{
+  openMoodPlayback();
+
+  const float PI2    = 2.0f * 3.14159265f;
+  const float DT     = 1.0f / SAMPLE_RATE;
+  const float hp_tau = 1.0f / (PI2 * hpHz);
+  const float hp_a   = hp_tau / (hp_tau + DT);
+  const float lp_tau = 1.0f / (PI2 * 4000.0f);
+  const float lp_b   = DT   / (lp_tau + DT);
+
+  const int CHUNK = 256;
+  int16_t chunk[CHUNK];
+  int ci = 0;
+  float hp_x1 = 0.0f, hp_y1 = 0.0f, lp_y1 = 0.0f;
+
+  for (int i = 0; i < active_sample_count; ++i)
+  {
+    float x   = (float)record_buffer[i];
+    float yhp = hp_a * (hp_y1 + x - hp_x1);
+    hp_x1 = x; hp_y1 = yhp;
+    float ylp = lp_b * yhp + (1.0f - lp_b) * lp_y1;
+    lp_y1 = ylp;
+
+    int32_t out = (int32_t)ylp;
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+    chunk[ci++] = applyPlaybackGain((int16_t)out);
+
+    if (ci >= CHUNK)
+    {
+      mixMoodInto(chunk, ci);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, ci * sizeof(int16_t), &bw, portMAX_DELAY);
+      ci = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
+      if (isJoystickButtonPressed()) break;
+    }
+  }
+  if (ci > 0)
+  {
+    mixMoodInto(chunk, ci);
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, ci * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
   closeMoodPlayback();
   stopTxAndFlush();
 }
