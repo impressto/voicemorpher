@@ -3654,6 +3654,7 @@ static void thereminMode()
 
   int joyYMin = g_prefs.getInt("th_ymin", 100);
   int joyYMax = g_prefs.getInt("th_ymax", 3900);
+  bool th_quantize = g_prefs.getBool("th_quantize", false);
 
   // Reinitialize TX with low-latency DMA: 2×64 = 128 samples ≈ 12ms at 11025 Hz
   i2s_driver_uninstall(I2S_TX_PORT);
@@ -3699,20 +3700,38 @@ static void thereminMode()
   tft.setCursor(BAR_X, VBAR_Y - 12);
   tft.print("Vol");
   tft.drawRect(VBAR_X - 1, VBAR_Y - 1, VBAR_W + 2, VBAR_H + 2, tft.color565(40, 50, 100));
-  // Hint
+  // Mode badge (FREE / NOTES) in header, right side
+  auto drawThereminBadge = [&](bool quantize) {
+    const char *label = quantize ? "NOTES" : " FREE";
+    uint16_t bg = quantize ? tft.color565(160, 120, 0) : tft.color565(0, 130, 60);
+    tft.fillRoundRect(TFT_W - 72, 6, 64, 22, 4, bg);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(TFT_W - 68, 10);
+    tft.print(label);
+  };
+  drawThereminBadge(th_quantize);
+
+  // Hint (two lines)
+  tft.setTextSize(1);
   tft.setTextColor(COL_GRAY);
+  tft.setCursor(4, TFT_H - 22);
+  tft.print("Y: pitch   X: vol");
   tft.setCursor(4, TFT_H - 12);
-  tft.print("Y: pitch   X: vol   Btn: exit");
+  tft.print("Btn: free/notes  Hold: exit");
 
   float phase    = 0.0f;
   char lastNote[8]  = "";
   char lastFreq[16] = "";
   int  lastPitchBar = -1;
   int  lastVolBar   = -1;
+  bool lastQuantize = th_quantize;
   unsigned long lastDisplayMs = 0;
 
   const int CHUNK = 64;
   int16_t buf[CHUNK];
+
+  openMoodPlayback();
 
   while (true)
   {
@@ -3725,6 +3744,10 @@ static void thereminMode()
     int clampedY = rawY < joyYMin ? joyYMin : (rawY > joyYMax ? joyYMax : rawY);
     float pitchT = 1.0f - (float)(clampedY - joyYMin) / (float)(joyYMax - joyYMin);
     float freq   = 65.406f * powf(2.0f, pitchT * 5.0f);
+    if (th_quantize) {
+      int midi = (int)roundf(69.0f + 12.0f * log2f(freq / 440.0f));
+      freq = 440.0f * powf(2.0f, (midi - 69) / 12.0f);
+    }
 
     // X → amplitude (right = loud); squared curve for natural feel
     float amp = (float)rawX / 4095.0f;
@@ -3744,6 +3767,7 @@ static void thereminMode()
       if (out < INT16_MIN) out = INT16_MIN;
       buf[i] = (int16_t)out;
     }
+    mixMoodInto(buf, CHUNK);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, buf, CHUNK * sizeof(int16_t), &bw, portMAX_DELAY);
 
@@ -3799,14 +3823,30 @@ static void thereminMode()
         if (volFill > 0)
           tft.fillRect(VBAR_X, VBAR_Y, volFill, VBAR_H, tft.color565(80, 200, 80));
       }
+
+      // Mode badge
+      if (th_quantize != lastQuantize)
+      {
+        lastQuantize = th_quantize;
+        drawThereminBadge(th_quantize);
+      }
     }
 
     if (isJoystickButtonPressed())
     {
+      unsigned long pressStart = millis();
       while (isJoystickButtonPressed()) delay(10);
-      break;
+      if (millis() - pressStart >= 500) {
+        break;  // long press = exit
+      } else {
+        th_quantize = !th_quantize;
+        g_prefs.putBool("th_quantize", th_quantize);
+        lastQuantize = !th_quantize;  // force badge redraw next display tick
+      }
     }
   }
+
+  closeMoodPlayback();
 
   // Fade to silence
   memset(buf, 0, sizeof(buf));
