@@ -6,6 +6,9 @@ using namespace fs;
 #include <Preferences.h>
 #include "driver/i2s.h"
 #include "config.h"
+#include "kitten_pcm.h"
+#include "rizz_pcm.h"
+#include "nana_pcm.h"
 
 static Preferences g_prefs;
 
@@ -177,6 +180,7 @@ void playBufferSimple();
 void passthrough();
 void passthroughWithEffect(int fx);
 static void thereminMode();
+static void runThereminMenu();
 static void calibrateThereminJoy();
 void playReverse();
 void playResample(float speed);
@@ -647,6 +651,12 @@ static float s_micGainLevel   = (1.0f - 0.1f) / 1.9f;  // slider maps 0.1x–2.0
 // volume: maps [0,1] to gain [0.5, 10.0]; 0.579 ≈ DEFAULT_PLAYBACK_GAIN=6.0
 static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
+
+// Theremin sound source
+static const char *TH_SOUND_NAMES[] = { "Sine", "Kitten", "Rizz", "Nana" };
+static const char *TH_SOUND_PATHS[] = { nullptr, "/kitten.wav", "/rizz.wav", "/nana.wav" };
+static const int   TH_SOUND_COUNT   = 4;
+static int         g_th_sound       = 0;  // 0=Sine 1=Kitten 2=Rizz
 
 // Mood background music
 static const char *MOOD_NAMES[] = { "None", "Exciting", "Happy", "Romantica", "Sad", "Powerful", "Scary" };
@@ -2184,7 +2194,7 @@ void runMenuAction(int item)
       break;
     }
     case MENU_THEREMIN:
-      thereminMode();
+      runThereminMenu();
       drawMenu();
       break;
     case MENU_SETTINGS:
@@ -3656,8 +3666,17 @@ static void thereminMode()
   int joyYMax = g_prefs.getInt("th_ymax", 3900);
   bool th_quantize = g_prefs.getBool("th_quantize", false);
 
-  // Reinitialize TX with low-latency DMA: 2×64 = 128 samples ≈ 12ms at 11025 Hz
   i2s_driver_uninstall(I2S_TX_PORT);
+
+  // PCM arrays are DRAM_ATTR — copied from flash into SRAM at boot, so the
+  // synthesis loop reads pure SRAM with no cache stalls or flash bus activity.
+  const int16_t *th_sample = nullptr;
+  int            th_sample_len = 0;
+  if      (g_th_sound == 1) { th_sample = KITTEN_PCM; th_sample_len = KITTEN_LEN; }
+  else if (g_th_sound == 2) { th_sample = RIZZ_PCM;   th_sample_len = RIZZ_LEN;   }
+  else if (g_th_sound == 3) { th_sample = NANA_PCM;   th_sample_len = NANA_LEN;   }
+
+  // Reinitialize TX with low-latency DMA: 2×64 = 128 samples ≈ 12ms at 11025 Hz
   {
     i2s_config_t cfg = {};
     cfg.mode                = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
@@ -3676,6 +3695,7 @@ static void thereminMode()
     pins.data_in_num    = I2S_PIN_NO_CHANGE;
     i2s_set_pin(I2S_TX_PORT, &pins);
   }
+  Serial.println("TH: I2S installed"); Serial.flush();
 
   // Draw UI
   tft.fillScreen(C_BG);
@@ -3721,6 +3741,7 @@ static void thereminMode()
   tft.print("Btn: free/notes  Hold: exit");
 
   float phase    = 0.0f;
+  float readPos  = 0.0f;
   char lastNote[8]  = "";
   char lastFreq[16] = "";
   int  lastPitchBar = -1;
@@ -3730,8 +3751,6 @@ static void thereminMode()
 
   const int CHUNK = 64;
   int16_t buf[CHUNK];
-
-  openMoodPlayback();
 
   while (true)
   {
@@ -3753,21 +3772,36 @@ static void thereminMode()
     float amp = (float)rawX / 4095.0f;
     amp = amp * amp;
 
-    // Generate chunk from LUT with linear interpolation
-    for (int i = 0; i < CHUNK; i++)
-    {
-      int   idx  = (int)phase & 0xFF;
-      float frac = phase - (int)phase;
-      float s    = (1.0f - frac) * SINE_LUT[idx] + frac * SINE_LUT[(idx + 1) & 0xFF];
-      phase += 256.0f * freq / (float)SAMPLE_RATE;
-      if (phase >= 256.0f) phase -= 256.0f;
-
-      int32_t out = (int32_t)(s * amp * 0.85f);
-      if (out > INT16_MAX) out = INT16_MAX;
-      if (out < INT16_MIN) out = INT16_MIN;
-      buf[i] = (int16_t)out;
+    // Generate chunk: sine LUT or variable-rate sample resampling
+    if (th_sample == nullptr) {
+      for (int i = 0; i < CHUNK; i++) {
+        int   idx  = (int)phase & 0xFF;
+        float frac = phase - (int)phase;
+        float s    = (1.0f - frac) * SINE_LUT[idx] + frac * SINE_LUT[(idx + 1) & 0xFF];
+        phase += 256.0f * freq / (float)SAMPLE_RATE;
+        if (phase >= 256.0f) phase -= 256.0f;
+        int32_t out = (int32_t)(s * amp * 0.85f);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        buf[i] = (int16_t)out;
+      }
+    } else {
+      float len_f      = (float)th_sample_len;
+      float pitch_rate = freq / 440.0f;
+      for (int i = 0; i < CHUNK; i++) {
+        int   idx0 = (int)readPos;
+        if (idx0 < 0) idx0 = 0;
+        if (idx0 >= th_sample_len) idx0 = th_sample_len - 1;
+        float frac = readPos - idx0;
+        int   idx1 = (idx0 + 1 < th_sample_len) ? idx0 + 1 : 0;
+        float s    = (1.0f - frac) * th_sample[idx0] + frac * th_sample[idx1];
+        readPos = fmodf(readPos + pitch_rate, len_f);
+        int32_t out = (int32_t)(s * amp * 0.85f);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        buf[i] = (int16_t)out;
+      }
     }
-    mixMoodInto(buf, CHUNK);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, buf, CHUNK * sizeof(int16_t), &bw, portMAX_DELAY);
 
@@ -3846,8 +3880,6 @@ static void thereminMode()
     }
   }
 
-  closeMoodPlayback();
-
   // Fade to silence
   memset(buf, 0, sizeof(buf));
   for (int i = 0; i < 3; i++) { size_t bw = 0; i2s_write(I2S_TX_PORT, buf, CHUNK * sizeof(int16_t), &bw, portMAX_DELAY); }
@@ -3873,6 +3905,87 @@ static void thereminMode()
     i2s_set_pin(I2S_TX_PORT, &pins);
   }
   i2s_zero_dma_buffer(I2S_TX_PORT);
+}
+
+static void runThereminMenu()
+{
+  static const char  *items[]  = { "Play", "Sound" };
+  static const uint8_t *icons[] = { ICON_THEREMIN, ICON_PLAY };
+  const int COUNT = 2;
+  int sel = 0;
+  int prevSel = -1;
+  unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < COUNT; ++i)
+      {
+        int16_t y = i * ITEM_H;
+        if (i == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, TFT_WHITE);
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, 0xDEFB);
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.setCursor(28, y + 5);
+        tft.print(items[i]);
+      }
+
+      char hint1[32], hint2[32];
+      snprintf(hint1, sizeof(hint1), "Sound: %s", TH_SOUND_NAMES[g_th_sound]);
+      snprintf(hint2, sizeof(hint2), "X: back");
+      drawHints(hint1, hint2);
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return;
+      sel = (sel + (y < 0 ? -1 : 1) + COUNT) % COUNT;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+
+      if (sel == 0)  // Play
+      {
+        thereminMode();
+        prevSel = -1;
+      }
+      else  // Sound picker
+      {
+        static const uint8_t *soundIcons[] = { ICON_THEREMIN, ICON_PLAY, ICON_PLAY, ICON_PLAY };
+        int newSound = showIconList(TH_SOUND_NAMES, soundIcons, TH_SOUND_COUNT, g_th_sound);
+        if (newSound >= 0 && newSound != g_th_sound)
+        {
+          g_th_sound = newSound;
+          g_prefs.putInt("th_sound", g_th_sound);
+        }
+        prevSel = -1;
+      }
+    }
+  }
 }
 
 void passthroughWithEffect(int fx)
@@ -4296,6 +4409,8 @@ void setup()
   if (s_micGainLevel < 0.0f) s_micGainLevel = 0.0f;
   if (s_micGainLevel > 1.0f) s_micGainLevel = 1.0f;
   Serial.printf("✓ Mic gain loaded: %.2fx\n", g_mic_gain);
+  g_th_sound  = g_prefs.getInt("th_sound", 0);
+  if (g_th_sound < 0 || g_th_sound >= TH_SOUND_COUNT) g_th_sound = 0;
   g_mood      = g_prefs.getInt("mood", 0);
   g_mood_gain = g_prefs.getFloat("mood_vol", MOOD_MUSIC_GAIN);
   s_moodVolLevel = g_mood_gain / 0.5f;
