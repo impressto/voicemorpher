@@ -7,7 +7,7 @@ using namespace fs;
 #include "driver/i2s.h"
 #include "config.h"
 #include "kitten_pcm.h"
-#include "rizz_pcm.h"
+#include "beavis_pcm.h"
 #include "nana_pcm.h"
 
 static Preferences g_prefs;
@@ -653,7 +653,7 @@ static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
 
 // Theremin sound source
-static const char *TH_SOUND_NAMES[] = { "Sine", "Kitten", "Rizz", "Nana" };
+static const char *TH_SOUND_NAMES[] = { "Sine", "Kitten", "Beavis", "Nana" };
 static const char *TH_SOUND_PATHS[] = { nullptr, "/kitten.wav", "/rizz.wav", "/nana.wav" };
 static const int   TH_SOUND_COUNT   = 4;
 static int         g_th_sound       = 0;  // 0=Sine 1=Kitten 2=Rizz
@@ -3673,7 +3673,7 @@ static void thereminMode()
   const int16_t *th_sample = nullptr;
   int            th_sample_len = 0;
   if      (g_th_sound == 1) { th_sample = KITTEN_PCM; th_sample_len = KITTEN_LEN; }
-  else if (g_th_sound == 2) { th_sample = RIZZ_PCM;   th_sample_len = RIZZ_LEN;   }
+  else if (g_th_sound == 2) { th_sample = BEAVIS_PCM; th_sample_len = BEAVIS_LEN; }
   else if (g_th_sound == 3) { th_sample = NANA_PCM;   th_sample_len = NANA_LEN;   }
 
   // Reinitialize TX with low-latency DMA: 2×64 = 128 samples ≈ 12ms at 11025 Hz
@@ -3705,6 +3705,12 @@ static void thereminMode()
   tft.setTextSize(2);
   tft.setCursor(8, 8);
   tft.print("Theremin");
+  if (g_th_sound > 0) {
+    tft.setTextSize(1);
+    tft.setTextColor(tft.color565(140, 200, 255));
+    tft.setCursor(10, 26);
+    tft.print(TH_SOUND_NAMES[g_th_sound]);
+  }
   // Pitch bar frame
   const int16_t BAR_X = 8, BAR_Y = 148, BAR_W = TFT_W - 16, BAR_H = 22;
   tft.drawRect(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2, tft.color565(40, 50, 100));
@@ -3712,9 +3718,9 @@ static void thereminMode()
   tft.setTextSize(1);
   tft.setTextColor(COL_GRAY);
   tft.setCursor(BAR_X, BAR_Y + BAR_H + 4);
-  tft.print("C2");
+  tft.print("C3");
   tft.setCursor(BAR_X + BAR_W - 12, BAR_Y + BAR_H + 4);
-  tft.print("C7");
+  tft.print("C6");
   // Volume bar frame
   const int16_t VBAR_X = 8, VBAR_Y = 192, VBAR_W = TFT_W - 16, VBAR_H = 14;
   tft.setCursor(BAR_X, VBAR_Y - 12);
@@ -3762,7 +3768,7 @@ static void thereminMode()
     // Y → pitch using calibrated range: up = low rawY = high pitch (C2–C7, 5 octaves)
     int clampedY = rawY < joyYMin ? joyYMin : (rawY > joyYMax ? joyYMax : rawY);
     float pitchT = 1.0f - (float)(clampedY - joyYMin) / (float)(joyYMax - joyYMin);
-    float freq   = 65.406f * powf(2.0f, pitchT * 5.0f);
+    float freq   = 130.813f * powf(2.0f, pitchT * 3.0f);  // C3–C6, 3 octaves (normal voice range)
     if (th_quantize) {
       int midi = (int)roundf(69.0f + 12.0f * log2f(freq / 440.0f));
       freq = 440.0f * powf(2.0f, (midi - 69) / 12.0f);
