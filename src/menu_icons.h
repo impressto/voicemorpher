@@ -233,6 +233,67 @@ static const uint8_t ICON_TELEPHONE[] PROGMEM = {
   0x00, 0x00,
 };
 
+// Crosshair = Joystick calibration icon
+static const uint8_t ICON_JOYCAL[] PROGMEM = {
+  0x00, 0x00,  //  0
+  0x00, 0x00,  //  1
+  0x01, 0x80,  //  2: .......XX.......  vertical bar top
+  0x01, 0x80,  //  3
+  0x01, 0x80,  //  4
+  0x01, 0x80,  //  5
+  0x01, 0x80,  //  6
+  0x7F, 0xFE,  //  7: .XXXXXXXXXXXXXX.  horizontal bar
+  0x7F, 0xFE,  //  8: .XXXXXXXXXXXXXX.
+  0x01, 0x80,  //  9
+  0x01, 0x80,  // 10
+  0x01, 0x80,  // 11
+  0x01, 0x80,  // 12
+  0x01, 0x80,  // 13  vertical bar bottom
+  0x00, 0x00,  // 14
+  0x00, 0x00,  // 15
+};
+
+// One-cycle sine wave = Theremin icon
+// y(col) = round(7 - 5*sin(2π*col/16)), amplitude 5, centre row 7
+static const uint8_t ICON_THEREMIN[] PROGMEM = {
+  0x00, 0x00,  //  0
+  0x00, 0x00,  //  1
+  0x1C, 0x00,  //  2: ...###.......... (cols 3-5, peak)
+  0x00, 0x00,  //  3
+  0x22, 0x00,  //  4: ..X...X......... (cols 2,6)
+  0x41, 0x00,  //  5: .X.....X........ (cols 1,7)
+  0x00, 0x00,  //  6
+  0x80, 0x80,  //  7: X.......X....... (cols 0,8, zero crossings)
+  0x00, 0x00,  //  8
+  0x00, 0x41,  //  9: .........X.....X (cols 9,15)
+  0x00, 0x00,  // 10
+  0x00, 0x22,  // 11: ..........X...X. (cols 10,14)
+  0x00, 0x1C,  // 12: ...........###.. (cols 11-13, trough)
+  0x00, 0x00,  // 13
+  0x00, 0x00,  // 14
+  0x00, 0x00,  // 15
+};
+
+// V-shape (fold point at bottom) = Wavefold icon
+static const uint8_t ICON_WAVEFOLD[] PROGMEM = {
+  0x00, 0x00,  // 0
+  0x00, 0x00,  // 1
+  0x00, 0x00,  // 2
+  0x80, 0x01,  // 3: X..............X
+  0x40, 0x02,  // 4: .X............X.
+  0x20, 0x04,  // 5: ..X..........X..
+  0x10, 0x08,  // 6: ...X........X...
+  0x08, 0x10,  // 7: ....X......X....
+  0x04, 0x20,  // 8: .....X....X.....
+  0x02, 0x40,  // 9: ......X..X......
+  0x01, 0x80,  // 10: .......XX.......  <- fold point
+  0x00, 0x00,  // 11
+  0x00, 0x00,  // 12
+  0x00, 0x00,  // 13
+  0x00, 0x00,  // 14
+  0x00, 0x00,  // 15
+};
+
 // Stacked disks = Storage/Database icon
 static const uint8_t ICON_STORAGE[] PROGMEM = {
   0x00, 0x00, 0x0F, 0xF0, 0x3F, 0xFC, 0x0F, 0xF0,
@@ -249,12 +310,14 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_FLASH_REC,   // MENU_LONG_REC
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY
   ICON_MOOD,        // MENU_MOOD
+  ICON_THEREMIN,    // MENU_THEREMIN
   ICON_SETTINGS,    // MENU_SETTINGS
   // Settings sub-menu items
   ICON_VOLUME,      // MENU_VOLUME
   ICON_FEEDBACK,    // MENU_FEEDBACK
   ICON_LIVE_FX,     // MENU_LIVE_GAIN
   ICON_MIC_SENS,    // MENU_MIC_GAIN
+  ICON_JOYCAL,      // MENU_CALIBRATE_JOY
   // Effects sub-menu items (indices 13+)
   ICON_REVERSE,
   ICON_PITCH,
@@ -267,4 +330,5 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_MONSTER,
   ICON_CHORUS,
   ICON_TELEPHONE,
+  ICON_WAVEFOLD,
 };
