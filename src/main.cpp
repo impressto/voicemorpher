@@ -3778,6 +3778,8 @@ static void thereminMode()
   bool lastQuantize = th_quantize;
   float lastSonarCm = (TH_SONAR_MIN_CM + TH_SONAR_MAX_CM) * 0.5f;
   int   sonarTick   = 0;
+  float stepVol     = 0.5f;       // sonar mode: held volume level (0–1, 8 steps)
+  unsigned long lastVolMoveMs = 0;
   unsigned long lastDisplayMs = 0;
 
   const int CHUNK = 64;
@@ -3811,9 +3813,23 @@ static void thereminMode()
       freq = 440.0f * powf(2.0f, (midi - 69) / 12.0f);
     }
 
-    // X → amplitude (right = loud); squared curve for natural feel
-    float amp = (float)rawX / 4095.0f;
-    amp = amp * amp;
+    // X → amplitude
+    float amp;
+    if (g_th_pitch_src == 1) {
+      // Sonar mode: joystick steps volume up/down and holds position
+      int xDir = readJoystickAxis(JOY_X_PIN);
+      unsigned long vm = millis();
+      if (xDir != 0 && vm - lastVolMoveMs >= 300) {
+        stepVol += xDir * (1.0f / 8.0f);
+        if (stepVol < 0.0f) stepVol = 0.0f;
+        if (stepVol > 1.0f) stepVol = 1.0f;
+        lastVolMoveMs = vm;
+      }
+      amp = stepVol;
+    } else {
+      float v = (float)rawX / 4095.0f;
+      amp = v * v;  // squared for natural feel with joystick
+    }
 
     // Generate chunk: sine LUT or variable-rate sample resampling
     if (th_sample == nullptr) {
@@ -3892,7 +3908,7 @@ static void thereminMode()
       }
 
       // Volume bar
-      int volFill = (int)(amp * VBAR_W);
+      int volFill = (int)((g_th_pitch_src == 1 ? stepVol : amp) * VBAR_W);
       if (volFill != lastVolBar)
       {
         lastVolBar = volFill;
