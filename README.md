@@ -1,6 +1,7 @@
 # VoiceMorpher — ESP32-S3 Audio Effects Project
 
-Turn your voice into something completely different! This project lets you record your voice and apply real-time sound effects like pitch shifting, reverse, echo, stutter, and ring modulation — all controlled with a joystick and displayed on a small screen.
+Turn your voice into something completely different! This project lets you record your voice and apply real-time sound effects like pitch shifting, reverse, echo, stutter, and ring modulation — all controlled with a joystick and displayed on a small color screen. It also includes a **Theremin mode** where you can play musical notes by moving your hand over a distance sensor.
+
 <img width="1186" height="577" alt="voicemorpher_diagramming" src="https://github.com/user-attachments/assets/8e7c6fd9-c5b0-4fcc-9130-51b6990499ea" />
 
 
@@ -13,6 +14,7 @@ Think of the ESP32-S3 microcontroller like a brain:
 - 🎙️ **The microphone** is the ear — it captures sound and converts it to numbers
 - 🧠 **The ESP32-S3** processes those numbers and applies effects
 - 🔊 **The amplifier and speaker** are the mouth — they convert the numbers back into sound
+- 🖥️ **The color display** shows menus, waveforms, and live feedback in full color
 
 Sound is just numbers. Once your voice is stored as a list of numbers, you can reverse the list (reverse effect), multiply the numbers by a wobbling wave (ring mod), or play it back at a different speed (pitch shift). That's the magic of digital audio!
 
@@ -26,8 +28,9 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 | INMP441 microphone module | Captures your voice as a digital signal |
 | MAX98357A amplifier module | Drives the speaker from a digital signal |
 | Small speaker (4–8 Ω) | Makes the sound you can hear |
-| ST7789V TFT display (240×320) | Shows the menu on screen |
+| ST7789V TFT display (240×320) | Full-color screen showing menus and waveforms |
 | Analog joystick module | Navigates the menu and adjusts effects |
+| HC-SR04 ultrasonic sensor *(optional)* | Controls theremin pitch with hand distance |
 | Breadboard + jumper wires | Connects everything together |
 | USB cable | Powers the board and uploads code |
 
@@ -74,11 +77,20 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 
 | Joystick Pin | ESP32-S3 Pin | Purpose |
 |--------------|--------------|---------|
-| VRx (X axis) | GPIO 17 | Adjusts effect levels in sub-menus |
-| VRy (Y axis) | GPIO 20 | Scrolls up and down the main menu |
+| VRx (X axis) | GPIO 17 | Adjusts effect levels / theremin volume |
+| VRy (Y axis) | GPIO 20 | Scrolls up and down the main menu / theremin pitch |
 | SW (Button) | GPIO 35 | Selects the highlighted menu item |
 | VCC | 3.3V | Power |
 | GND | GND | Ground |
+
+### 📡 HC-SR04 Ultrasonic Sensor → ESP32-S3 *(Theremin only)*
+
+| Sensor Pin | ESP32-S3 Pin | What it does |
+|------------|--------------|--------------|
+| VCC | 5V | Power |
+| GND | GND | Ground |
+| TRIG | GPIO 15 | Trigger — sends the ultrasonic pulse |
+| ECHO | GPIO 16 | Echo — measures how long the pulse takes to return |
 
 ---
 
@@ -109,9 +121,24 @@ PlatformIO is a tool inside VS Code that manages all the libraries and compiling
 1. Plug in your ESP32-S3 via USB
 2. Click the **→ Upload** arrow at the bottom of VS Code (or press the PlatformIO upload button)
 3. Wait for it to compile and flash — this takes about 30–60 seconds the first time
-4. The OLED display should light up with the main menu
+4. The color display should light up with the main menu
 
 > **Tip:** If the upload fails, hold the **BOOT** button on your ESP32 while clicking upload, then release it once uploading starts.
+
+---
+
+## The Color Display
+
+The VoiceMorpher uses a **240×320 ST7789V IPS TFT display** — the same kind of screen used in many game consoles and smartwatches. It shows:
+
+- **Gradient menu bars** — the selected item is highlighted with a blue-to-teal gradient
+- **Live waveforms** — when recording or playing back, a real-time oscilloscope trace is drawn in the color of the current effect
+- **Progress bars** — for recording time, effect level, and theremin pitch/volume
+- **Note name and frequency** — in theremin mode, the current musical note (e.g. `A4 — 440.0 Hz`) is shown in large text
+
+The display uses the SPI bus (a 4-wire high-speed data connection). The ESP32-S3 sends new pixels to the screen using DMA (Direct Memory Access), so drawing doesn't slow down the audio processing.
+
+> **Why color?** Color makes it much easier to read at a glance which mode you're in. The menus use a dark navy background with cyan accents — easy to see in a classroom or stage environment.
 
 ---
 
@@ -126,12 +153,11 @@ Use the **joystick Y axis** (up/down) to scroll through the menu. Press the **jo
 | **Record** | Record your voice (up to 10 seconds) |
 | **Play raw** | Play back your recording without any effects |
 | **Passthrough** | Hear your voice live through the speaker in real time |
-| **Reverse** | Play the recording backwards |
-| **Pitch up** | Make your voice higher (like a chipmunk) |
-| **Pitch down** | Make your voice lower (like a giant) |
-| **Echo** | Add an echo/delay effect |
-| **Ring mod** | Add a robotic buzzing effect |
-| **Stutter** | Chop your voice into repeating chunks |
+| **Long Record** | Record longer clips stored on flash memory |
+| **Long Play** | Play back long recordings with effects |
+| **Mood Music** | Play background music while you perform |
+| **Theremin** | Play musical notes by moving your hand *(see below)* |
+| **Settings** | Adjust volume, mic sensitivity, and other options |
 
 ### Recording Your Voice
 
@@ -150,6 +176,75 @@ When you select an effect like Pitch up, Echo, Ring mod, or Stutter, a level sub
 - Press the **button** to confirm and play the effect
 
 The device remembers your last setting for each effect, so you don't have to re-adjust every time.
+
+---
+
+## Theremin Mode
+
+A **theremin** is a musical instrument you play without touching it — you move your hands through the air to control pitch and volume. The VoiceMorpher has a built-in theremin!
+
+### How to Enter Theremin Mode
+
+Select **Theremin** from the main menu. A sub-menu appears with three options:
+
+| Option | What it does |
+|--------|--------------|
+| **Play** | Start playing the theremin |
+| **Sound** | Choose the theremin's voice (Sine, Kitten, Beavis, Nana, String) |
+| **Pitch** | Choose the pitch controller (Joystick or Sonar) |
+
+### Playing the Theremin
+
+Once in Play mode, the screen shows:
+- The current **note name** (e.g. `C4`) in large cyan text
+- The current **frequency** in Hz
+- A **pitch bar** — shows where in the range your hand is
+- A **volume bar** — shows the current volume
+- A badge showing **FREE** (continuous pitch) or **NOTES** (snaps to musical notes)
+
+### Controls
+
+| Action | Result |
+|--------|--------|
+| Move hand closer to sensor (or joystick Y up) | Higher pitch |
+| Move hand further from sensor (or joystick Y down) | Lower pitch |
+| Joystick X right | Volume up one step |
+| Joystick X left | Volume down one step |
+| Short button press | Toggle FREE ↔ NOTES (chromatic quantize) |
+| Hold button for 0.5 s | Exit theremin mode |
+
+> **NOTES mode** snaps the pitch to the nearest semitone on a standard musical scale — great for playing recognisable melodies. **FREE mode** lets you slide smoothly between pitches like a real theremin.
+
+### Pitch Source: Joystick vs Sonar
+
+Go to **Theremin → Pitch** to choose how pitch is controlled:
+
+**Joystick** — push the joystick Y axis up for high notes, down for low notes. Quick and simple, no extra hardware needed.
+
+**Sonar** — uses the HC-SR04 ultrasonic sensor. Hold your hand above the sensor and move it up and down:
+- Hand **close** (≈ 5 cm) → highest pitch
+- Hand **far** (≈ 30 cm) → lowest pitch
+
+The pitch range covers **C3 to C6** — three full octaves, plenty for melodies. The sonar range (5–30 cm) can be changed in `config.h` by editing `TH_SONAR_MIN_CM` and `TH_SONAR_MAX_CM`.
+
+### Volume Control in Sonar Mode
+
+In sonar mode both hands are busy — one controlling pitch. So volume works differently:
+- **Joystick right** → step volume up (it stays there)
+- **Joystick left** → step volume down (it stays there)
+- Volume starts at 50% each time you enter theremin mode
+
+This means you can set the volume once and then forget about it, focusing both hands on playing.
+
+### Theremin Sounds
+
+| Sound | Description |
+|-------|-------------|
+| **Sine** | A pure, smooth electronic tone — classic theremin sound |
+| **Kitten** | A cat meow sampled and pitch-shifted |
+| **Beavis** | The famous laugh, looped and resampled |
+| **Nana** | A vocal "na-na" sample |
+| **String** | A string instrument sample for a more musical feel |
 
 ---
 
@@ -181,6 +276,9 @@ Your audio is chopped into short chunks and each chunk is repeated several times
 | **Sampling rate** | 11,025 Hz means 11,025 samples every second — enough for clear voice |
 | **Memory management** | Fitting 10 seconds of audio (220,500 samples) into 512 KB of RAM |
 | **Signal processing** | Changing audio by doing math on those numbers |
+| **SPI & DMA** | How the ESP32 sends pixel data to the color display without slowing down audio |
+| **Ultrasonic sensing** | The HC-SR04 sends a sound pulse and times how long the echo takes to return — distance = speed × time |
+| **Theremin / continuous controller** | Playing music by changing a physical quantity (distance) rather than pressing keys |
 | **FreeRTOS** | The operating system inside the ESP32 that keeps tasks running smoothly |
 
 ---
@@ -192,8 +290,9 @@ Once you're comfortable with this project, here are some ideas to explore:
 - **Add more effects** — try a flanger (tiny time-varying echo) or a low-pass filter (muffle effect)
 - **Save recordings to an SD card** — so you can share them
 - **Add a second recording slot** — so you can layer two voices together
-- **Visualize audio on the OLED** — draw a waveform on screen while recording
-- **Add pitch correction** — snap the pitch to musical notes
+- **Add a second HC-SR04** — control volume with one hand and pitch with the other, like a real theremin
+- **Add pitch correction** — snap the pitch to a specific musical scale (major, minor, pentatonic)
+- **Draw a frequency spectrum** — use an FFT to show which frequencies are loudest on the color display
 
 ---
 
@@ -202,7 +301,10 @@ Once you're comfortable with this project, here are some ideas to explore:
 | Problem | Try this |
 |---------|----------|
 | Nothing on the display | Check SCL/MOSI/CS/DC wiring, that BL (GPIO 8) is HIGH, and that VCC is 3.3V |
+| Colors look wrong (red and blue swapped) | Check `TFT_RGB_ORDER=0` is set in `platformio.ini` |
 | No sound from speaker | Check AMP_SD is connected to GPIO 21 and the pin is HIGH |
 | Recording sounds distorted | Make sure the microphone L/R pin is connected to GND |
+| Theremin sonar has no effect | Check TRIG→GPIO 15 and ECHO→GPIO 16; sensor needs 5V |
+| Theremin pitch stops changing before full range | This is normal if hand is beyond 30 cm — the range is intentionally short for easy play |
 | Upload fails | Hold the BOOT button while clicking upload |
 | Serial monitor shows garbled text | Set baud rate to **115200** |
