@@ -1,10 +1,15 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <U8g2lib.h>
+#include <TFT_eSPI.h>
+#include "menu_icons.h"
 #include <LittleFS.h>
+using namespace fs;
 #include <Preferences.h>
 #include "driver/i2s.h"
 #include "config.h"
+#include "kitten_pcm.h"
+#include "beavis_pcm.h"
+#include "nana_pcm.h"
+#include "string_pcm.h"
 
 static Preferences g_prefs;
 
@@ -20,9 +25,18 @@ static Preferences g_prefs;
 #define I2S_TX_SD 38      // DIN (data in)
 #define AMP_SD 21         // amplifier shutdown/enable pin (AMP_SD)
 
-// OLED display pins (I2C)
-#define DISPLAY_SDA 18
-#define DISPLAY_SCL 16
+// ST7789V TFT display — pins defined in include/User_Setup.h
+#define TFT_W    320   // logical width after setRotation(1)
+#define TFT_H    240   // logical height after setRotation(1)
+#define ITEM_H    26   // menu row height (9 × 26 = 234 fits in 240px)
+#define COL_GRAY 0x7BEF
+
+// Waveform display geometry — set WAVEFORM_HEIGHT in src/config.h to resize.
+#define WF_X   8
+#define WF_Y   38
+#define WF_W   (TFT_W - 16)
+#define WF_H   WAVEFORM_HEIGHT
+#define WF_CY  (WF_Y + WF_H / 2)
 
 // Joystick pins
 #define JOY_X_PIN 17
@@ -31,8 +45,10 @@ static Preferences g_prefs;
 #define JOY_LOW_THRESHOLD 1200
 #define JOY_HIGH_THRESHOLD 2800
 
+#define HC_SR04_TRIG_PIN 15
+#define HC_SR04_ECHO_PIN 16
+
 // Audio parameters
-const int SAMPLE_RATE = 11025;
 const int BITS_PER_SAMPLE = 16;
 const int CHANNELS = 1; // mono
 
@@ -46,24 +62,33 @@ static bool g_has_recording = false;
 float playback_gain = DEFAULT_PLAYBACK_GAIN; // adjust default volume in src/config.h
   
 // Menu and UI
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+TFT_eSPI tft = TFT_eSPI();
 
 enum MenuItem
 {
   // Root menu items (0 to MENU_ROOT_COUNT-1)
-  MENU_LONG_REC,
   MENU_RECORD,
-  MENU_LONG_PLAY,
   MENU_PLAY,
-  MENU_EFFECTS,
   MENU_PASSTHROUGH,
-  MENU_SAVE,
-  MENU_LOAD,
-  MENU_VOLUME,
+  MENU_LONG_REC,
+  MENU_LONG_PLAY,
+  MENU_MOOD,
+  MENU_THEREMIN,
+  MENU_SETTINGS,
   MENU_ROOT_COUNT,
 
-  // Effects sub-menu items (MENU_ROOT_COUNT to MENU_COUNT-1)
-  MENU_REVERSE = MENU_ROOT_COUNT,
+  MENU_STORAGE_COUNT = MENU_ROOT_COUNT,  // Storage sub-menu removed; alias keeps Settings code intact
+
+  // Settings sub-menu items (MENU_STORAGE_COUNT to MENU_SETTINGS_COUNT-1)
+  MENU_VOLUME = MENU_STORAGE_COUNT,
+  MENU_FEEDBACK,
+  MENU_LIVE_GAIN,
+  MENU_MIC_GAIN,
+  MENU_CALIBRATE_JOY,
+  MENU_SETTINGS_COUNT,
+
+  // Effects sub-menu items (MENU_SETTINGS_COUNT to MENU_COUNT-1)
+  MENU_REVERSE = MENU_SETTINGS_COUNT,
   MENU_PITCH,
   MENU_ECHO,
   MENU_RINGMOD,
@@ -73,21 +98,50 @@ enum MenuItem
   MENU_ALIEN,
   MENU_MONSTER,
   MENU_CHORUS,
+  MENU_TELEPHONE,
+  MENU_WAVEFOLD,
   MENU_COUNT
 };
 
-static const char *menuLabels[MENU_COUNT] = {
-  // Root menu
-  "Flash Record",
+// FontAwesome 4.x glyph codepoints encoded as UTF-8 literals
+#define FA_BOLT      "\xEF\x83\xA7"  // U+F0E7
+#define FA_MIC       "\xEF\x84\xB0"  // U+F130
+#define FA_PLAY      "\xEF\x81\x8B"  // U+F04B
+#define FA_MAGIC     "\xEF\x83\x90"  // U+F0D0
+#define FA_PHONES    "\xEF\x80\xA5"  // U+F025
+#define FA_SAVE      "\xEF\x83\x87"  // U+F0C7
+#define FA_FOLDER    "\xEF\x81\xBC"  // U+F07C
+#define FA_VOLUME    "\xEF\x80\xA8"  // U+F028
+#define FA_BACK      "\xEF\x81\x8A"  // U+F04A
+#define FA_MUSIC     "\xEF\x80\x81"  // U+F001
+#define FA_ARROWS    "\xEF\x81\x87"  // U+F047
+#define FA_CIRCLE    "\xEF\x84\x8C"  // U+F10C
+#define FA_FFWD      "\xEF\x81\x90"  // U+F050
+#define FA_BARCHART  "\xEF\x82\x80"  // U+F080
+#define FA_MOON      "\xEF\x86\x86"  // U+F186
+#define FA_ROCKET    "\xEF\x84\xB5"  // U+F135
+#define FA_BUG       "\xEF\x86\x88"  // U+F188
+#define FA_GROUP     "\xEF\x83\x80"  // U+F0C0
+#define FA_UP        "\xEF\x81\xB7"  // U+F077
+#define FA_DOWN      "\xEF\x81\xB8"  // U+F078
+
+static const char *menuLabels[] = {
+  // Root menu items
   "Record",
-  "Flash Play",
   "Play",
-  "Effects",
   "Live FX",
-  "Save",
-  "Load",
+  "Stored Rec",
+  "Stored Play",
+  "Mood Music",
+  "Theremin",
+  "Settings",
+  // Settings sub-menu items
   "Volume",
-  // Effects sub-menu
+  "Feedback",
+  "Live Gain",
+  "Mic Gain",
+  "Joy Cal",
+  // Effects sub-menu items
   "Reverse",
   "Pitch",
   "Echo",
@@ -97,13 +151,24 @@ static const char *menuLabels[MENU_COUNT] = {
   "Haunted",
   "Alien",
   "Monster",
-  "Chorus"
+  "Chorus",
+  "Telephone",
+  "Wavefold",
 };
 
 int currentMenu = 0;
 int lastMenu = -1;
 static int lastJoystickY = 0;
 static unsigned long lastJoystickMoveMs = 0;
+
+// Waveform playback display state
+static bool    g_waveform_visible = false;
+static int32_t g_wf_total         = 0;       // 0 = use active_sample_count as denominator
+static int     g_wf_last_px       = -1;
+static bool    g_wf_use_peaks     = false;   // true when rendering from g_wf_peaks (Stored Play)
+static int16_t g_wf_peaks[TFT_W] = {};      // peak sample per display column for Stored Play
+static uint8_t g_wf_freqt[TFT_W] = {};      // normalised frequency 0=low 255=high, per column
+static int     g_wf_peak          = 32768;   // actual peak amplitude; normalises the display height
 
 // I2S ports
 const i2s_port_t I2S_RX_PORT = I2S_NUM_0;
@@ -118,6 +183,9 @@ void recordToBuffer();
 void playBufferSimple();
 void passthrough();
 void passthroughWithEffect(int fx);
+static void thereminMode();
+static void runThereminMenu();
+static void calibrateThereminJoy();
 void playReverse();
 void playResample(float speed);
 void playEcho(float delaySec, float decay);
@@ -128,9 +196,16 @@ void playHaunted(float delaySec, float decay);
 void playAlien(float speed, float ringFreq);
 void playMonster(float speed, float delaySec, float decay);
 void playChorus(float rate, float depth);
+void playTelephone(float hpHz);
+void playWavefold(float threshold);
 static int16_t applyPlaybackGain(int16_t sample);
 static void stopTxAndFlush();
 static void playRecordingDoneBlips();
+static bool loadMoodTrack(int mood);
+static void openMoodPlayback();
+static void closeMoodPlayback();
+static void mixMoodInto(int16_t *buf, int n);
+static int showIconList(const char *const *labels, const uint8_t *const *icons, int count, int &sel);
 
 static int readJoystickAxis(int pin)
 {
@@ -152,6 +227,20 @@ static float readJoystickXIntensity()
 static bool isJoystickButtonPressed()
 {
   return digitalRead(JOY_BTN_PIN) == LOW;
+}
+
+// Returns distance in cm, or -1.0 on timeout/no echo.
+// Max range is ~60 cm (3480 µs timeout). Safe to call in the I2S loop.
+static float readHCSR04cm()
+{
+  digitalWrite(HC_SR04_TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(HC_SR04_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(HC_SR04_TRIG_PIN, LOW);
+  long dur = pulseIn(HC_SR04_ECHO_PIN, HIGH, 10000); // 10 ms → ~160 cm; HC-SR04 needs 200-600 µs overhead before ECHO rises
+  if (dur == 0) return -1.0f;
+  return dur / 58.0f;
 }
 
 void handleJoystickMenu()
@@ -186,55 +275,316 @@ void handleJoystickMenu()
   }
 }
 
+// ── Gradient helpers ────────────────────────────────────────────────────────
+
+// Top→bottom gradient fill over a rectangle
+static void fillGradH(int16_t x, int16_t y, int16_t w, int16_t h,
+                       uint8_t r1, uint8_t g1, uint8_t b1,
+                       uint8_t r2, uint8_t g2, uint8_t b2)
+{
+  for (int16_t i = 0; i < h; ++i)
+  {
+    float t = (h > 1) ? (float)i / (h - 1) : 0.0f;
+    uint8_t r = (uint8_t)(r1 + ((int16_t)r2 - r1) * t);
+    uint8_t g = (uint8_t)(g1 + ((int16_t)g2 - g1) * t);
+    uint8_t b = (uint8_t)(b1 + ((int16_t)b2 - b1) * t);
+    tft.drawFastHLine(x, y + i, w, tft.color565(r, g, b));
+  }
+}
+
+// Left→right gradient fill over a rectangle
+static void fillGradV(int16_t x, int16_t y, int16_t w, int16_t h,
+                       uint8_t r1, uint8_t g1, uint8_t b1,
+                       uint8_t r2, uint8_t g2, uint8_t b2)
+{
+  for (int16_t i = 0; i < w; ++i)
+  {
+    float t = (w > 1) ? (float)i / (w - 1) : 0.0f;
+    uint8_t r = (uint8_t)(r1 + ((int16_t)r2 - r1) * t);
+    uint8_t g = (uint8_t)(g1 + ((int16_t)g2 - g1) * t);
+    uint8_t b = (uint8_t)(b1 + ((int16_t)b2 - b1) * t);
+    tft.drawFastVLine(x + i, y, h, tft.color565(r, g, b));
+  }
+}
+
+static const uint16_t C_BG = 0x0821; // dark navy background
+
+// Colored header bar with white title (y 0–36, separator line at y=36)
+static void drawHeader(const char *title)
+{
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.fillRect(0, 0, 4, 36, TFT_CYAN);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.print(title);
+}
+
+// Gray hint text at the bottom of a sub-menu screen
+static void drawHints(const char *line1, const char *line2 = nullptr)
+{
+  int16_t hy = TFT_H - (line2 ? 34 : 20);
+  tft.fillRect(0, hy - 4, TFT_W, TFT_H - (hy - 4), C_BG);
+  tft.drawFastHLine(0, hy - 5, TFT_W, tft.color565(25, 30, 65));
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY);
+  tft.setCursor(4, hy);
+  tft.print(line1);
+  if (line2)
+  {
+    tft.setCursor(4, hy + 14);
+    tft.print(line2);
+  }
+}
+
+// Progress bar with rounded frame and green→yellow gradient fill
+static void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h, float level)
+{
+  tft.drawRoundRect(x, y, w, h, 3, TFT_WHITE);
+  tft.fillRoundRect(x + 1, y + 1, w - 2, h - 2, 2, tft.color565(12, 15, 38));
+  int16_t fw = (int16_t)(level * (w - 2));
+  if (fw > 0)
+    fillGradV(x + 1, y + 1, fw, h - 2, 0, 210, 100, 200, 200, 0);
+}
+
+// ── Main menu ────────────────────────────────────────────────────────────────
+
 void drawMenu()
 {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tf);
+  tft.fillScreen(C_BG);
+  tft.setTextSize(2);
 
-  const int visibleCount = 5;
-  int startIndex = currentMenu - visibleCount / 2;
-  if (startIndex < 0) startIndex = 0;
-  if (startIndex > MENU_ROOT_COUNT - visibleCount)
-    startIndex = MENU_ROOT_COUNT - visibleCount;
-
-  for (int i = 0; i < visibleCount; ++i)
+  for (int i = 0; i < MENU_ROOT_COUNT; ++i)
   {
-    int itemIndex = startIndex + i;
-    int y = 11 + i * 12;
-
-    if (itemIndex == currentMenu)
+    int16_t y = i * ITEM_H;
+    uint16_t iconColor;
+    if (i == currentMenu)
     {
-      u8g2.drawBox(0, y - 10, 128, 12);
-      u8g2.setDrawColor(0);
-      u8g2.drawStr(2, y, menuLabels[itemIndex]);
-      u8g2.setDrawColor(1);
+      fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+      tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+      tft.setTextColor(TFT_WHITE);
+      iconColor = TFT_WHITE;
     }
     else
     {
-      u8g2.drawStr(2, y, menuLabels[itemIndex]);
+      uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+      tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+      tft.setTextColor(0xDEFB);
+      iconColor = 0xDEFB;
     }
+    tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+    tft.drawBitmap(6, y + 5, MENU_ICONS[i], 16, 16, iconColor);
+    tft.setCursor(28, y + 5);
+    tft.print(menuLabels[i]);
   }
-
-  if (startIndex > 0)
-  {
-    u8g2.drawStr(110, 7, "^");
-  }
-  if (startIndex + visibleCount < MENU_ROOT_COUNT)
-  {
-    u8g2.drawStr(110, 63, "v");
-  }
-
-  u8g2.sendBuffer();
 }
 
 void drawStatus(const char *line1, const char *line2)
 {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(0, 16, line1);
+  tft.fillScreen(C_BG);
+  // Thin accent strip at top
+  fillGradH(0, 0, TFT_W, 4, 0, 200, 220, 0, 80, 150);
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(4, 90);
+  tft.print(line1);
   if (line2)
-    u8g2.drawStr(0, 32, line2);
-  u8g2.sendBuffer();
+  {
+    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(4, 120);
+    tft.print(line2);
+  }
+}
+
+// Redraws one pixel column of the waveform (used for initial draw and cursor erase).
+static void drawWfColumn(int px)
+{
+  int x = WF_X + 1 + px;
+  tft.drawFastVLine(x, WF_Y + 1, WF_H - 2, C_BG);
+  tft.drawPixel(x, WF_CY, tft.color565(20, 30, 60));
+
+  const int innerW = WF_W - 2;
+  int16_t s;
+  if (g_wf_use_peaks)
+  {
+    s = g_wf_peaks[px];
+  }
+  else
+  {
+    int sIdx = (int)((int64_t)px * active_sample_count / innerW);
+    if (sIdx >= active_sample_count) sIdx = active_sample_count - 1;
+    s = record_buffer[sIdx];
+  }
+  int amp = (int)s * (WF_H / 2 - 2) / g_wf_peak;
+  int y0 = WF_CY, y1 = WF_CY - amp;
+  if (y1 < WF_Y + 1) y1 = WF_Y + 1;
+  if (y1 > WF_Y + WF_H - 2) y1 = WF_Y + WF_H - 2;
+
+  // Colour by frequency: blue (low) → red (mid) → yellow (high)
+  float t = g_wf_freqt[px] / 255.0f;
+  uint8_t wr, wg, wb;
+  if (t < 0.5f) {
+    float t2 = t * 2.0f;               // 0→1 across blue→red
+    wr = (uint8_t)(255 * t2);
+    wg = (uint8_t)(100 * (1.0f - t2));
+    wb = (uint8_t)(255 * (1.0f - t2));
+  } else {
+    float t2 = (t - 0.5f) * 2.0f;     // 0→1 across red→yellow
+    wr = 255;
+    wg = (uint8_t)(220 * t2);
+    wb = 0;
+  }
+  uint16_t wc = tft.color565(wr, wg, wb);
+  if (y1 <= y0) tft.drawFastVLine(x, y1, y0 - y1 + 1, wc);
+  else          tft.drawFastVLine(x, y0, y1 - y0 + 1, wc);
+}
+
+// Stretch raw per-column frequencies to fill the full blue→yellow colour range.
+static void normalizeFreqToColor(const float *raw, int cols)
+{
+  float f_min = 1e9f, f_max = 0.0f;
+  for (int i = 0; i < cols; ++i) {
+    if (raw[i] > 0 && raw[i] < f_min) f_min = raw[i];
+    if (raw[i] > f_max) f_max = raw[i];
+  }
+  float f_range = f_max - f_min;
+  for (int i = 0; i < cols; ++i) {
+    float t = (f_range > 1.0f && raw[i] > 0) ? (raw[i] - f_min) / f_range : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    g_wf_freqt[i] = (uint8_t)(t * 255.0f);
+  }
+}
+
+static void drawWaveformScreen(const char *title)
+{
+  g_wf_last_px = -1;
+
+  // Normalise to actual peak so quiet recordings still fill the box.
+  // Floor at 1000 (~3 % of full scale) so near-silence isn't stretched to noise.
+  {
+    int peak = 1;
+    if (g_wf_use_peaks)
+    {
+      for (int px = 0; px < WF_W - 2; ++px)
+        if (abs(g_wf_peaks[px]) > peak) peak = abs(g_wf_peaks[px]);
+    }
+    else
+    {
+      for (int i = 0; i < active_sample_count; ++i)
+        if (abs(record_buffer[i]) > peak) peak = abs(record_buffer[i]);
+    }
+    g_wf_peak = peak > 1000 ? peak : 1000;
+  }
+
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(8, 8);
+  tft.print(title);
+
+  tft.drawRect(WF_X, WF_Y, WF_W, WF_H, tft.color565(40, 50, 100));
+  tft.drawFastHLine(WF_X + 1, WF_CY, WF_W - 2, tft.color565(20, 30, 60));
+
+  // For buffer mode, compute ZCR-based frequency per column (peaks mode fills g_wf_freqt in fillStoredWaveformBuf)
+  if (!g_wf_use_peaks && active_sample_count > 0)
+  {
+    const int innerW = WF_W - 2;
+    const int ZCR_WIN = 512;
+    static float raw_freq[TFT_W];
+    memset(raw_freq, 0, sizeof(raw_freq));
+    for (int px = 0; px < innerW; ++px)
+    {
+      int sIdx = (int)((int64_t)px * active_sample_count / innerW);
+      int s0 = max(0, sIdx - ZCR_WIN / 2);
+      int s1 = min(active_sample_count - 1, sIdx + ZCR_WIN / 2);
+      int crossings = 0, prev_sign = record_buffer[s0] >= 0 ? 1 : -1;
+      for (int i = s0 + 1; i <= s1; ++i)
+      {
+        int sign = record_buffer[i] >= 0 ? 1 : -1;
+        if (sign != prev_sign) crossings++;
+        prev_sign = sign;
+      }
+      int winLen = s1 - s0;
+      raw_freq[px] = winLen > 0 ? (float)crossings * SAMPLE_RATE / (2.0f * winLen) : 0.0f;
+    }
+    normalizeFreqToColor(raw_freq, innerW);
+  }
+
+  for (int px = 0; px < WF_W - 2; ++px)
+    drawWfColumn(px);
+}
+
+// Scans the already-open LittleFS file to fill g_wf_peaks, then seeks back to
+// the start of sample data so the caller can immediately begin playback.
+static void fillStoredWaveformBuf(File &f, int32_t totalSamples)
+{
+  const int innerW = WF_W - 2;
+  memset(g_wf_peaks, 0, sizeof(g_wf_peaks));
+  memset(g_wf_freqt, 0, sizeof(g_wf_freqt));
+  if (totalSamples <= 0) return;
+
+  // Accumulate ZCR per column to estimate local frequency
+  // static to avoid blowing the loopTask stack (320*2 + 320*2 bytes)
+  static uint16_t zcr_count[TFT_W];
+  static uint16_t col_samples[TFT_W];
+  memset(zcr_count,   0, sizeof(zcr_count));
+  memset(col_samples, 0, sizeof(col_samples));
+
+  const int CHUNK = 256;
+  int16_t chunk[CHUNK];
+  int32_t pos = 0;
+  int prev_sign = 0;
+
+  while (pos < totalSamples)
+  {
+    int toRead = (int)min((int32_t)CHUNK, totalSamples - pos);
+    int got = (int)(f.read((uint8_t *)chunk, toRead * sizeof(int16_t)) / sizeof(int16_t));
+    if (got == 0) break;
+    for (int i = 0; i < got; ++i)
+    {
+      int px = (int)((int64_t)(pos + i) * innerW / totalSamples);
+      if (px >= innerW) px = innerW - 1;
+      if (abs(chunk[i]) > abs(g_wf_peaks[px]))
+        g_wf_peaks[px] = chunk[i];
+      int sign = chunk[i] > 0 ? 1 : (chunk[i] < 0 ? -1 : 0);
+      if (sign != 0) {
+        if (prev_sign != 0 && sign != prev_sign) zcr_count[px]++;
+        col_samples[px]++;
+        prev_sign = sign;
+      }
+    }
+    pos += got;
+  }
+
+  // Convert ZCR counts to raw frequencies, then stretch to fill the full colour range
+  static float raw_freq[TFT_W];
+  memset(raw_freq, 0, sizeof(raw_freq));
+  for (int px = 0; px < innerW; ++px)
+  {
+    raw_freq[px] = col_samples[px] > 0
+      ? (float)zcr_count[px] * SAMPLE_RATE / (2.0f * col_samples[px])
+      : 0.0f;
+  }
+  normalizeFreqToColor(raw_freq, innerW);
+
+  f.seek(sizeof(int32_t));  // rewind to start of sample data for playback
+}
+
+static void drawWaveformPlayhead(int samplePos)
+{
+  const int innerW = WF_W - 2;
+  int32_t total = g_wf_total > 0 ? g_wf_total : (int32_t)active_sample_count;
+  int px = (int)((int64_t)samplePos * innerW / total);
+  if (px < 0) px = 0;
+  if (px >= innerW) px = innerW - 1;
+  if (px == g_wf_last_px) return;
+  if (g_wf_last_px >= 0) drawWfColumn(g_wf_last_px);
+  tft.drawFastVLine(WF_X + 1 + px, WF_Y + 1, WF_H - 2, TFT_WHITE);
+  g_wf_last_px = px;
 }
 
 // Shows a sub-menu to select recording duration (1 to maxSecs seconds).
@@ -244,26 +594,31 @@ static int showDurationSubMenu(int currentSecs, int maxSecs = g_max_record_secs)
   int secs = currentSecs < 1 ? 1 : (currentSecs > maxSecs ? maxSecs : currentSecs);
   unsigned long lastMoveMs = 0;
 
+  const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+  int prevSecs = -1;
+
+  // Static parts drawn once
+  tft.fillScreen(C_BG);
+  drawHeader("Record Duration");
+  drawHints("< X: adjust >", "Btn: record");
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, "Record Duration");
+    // Only redraw bar + value when duration changes
+    if (secs != prevSecs)
+    {
+      prevSecs = secs;
+      float lvl = (maxSecs > 1) ? (float)(secs - 1) / (maxSecs - 1) : 1.0f;
+      drawProgressBar(BX, BY, BW, BH, lvl);
 
-    const int BX = 2, BY = 16, BW = 124, BH = 10;
-    u8g2.drawFrame(BX, BY, BW, BH);
-    int filled = maxSecs > 1
-                   ? (int)((float)(secs - 1) / (maxSecs - 1) * (BW - 2))
-                   : BW - 2;
-    if (filled > 0)
-      u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
-
-    char valBuf[32];
-    snprintf(valBuf, sizeof(valBuf), "Duration: %ds", secs);
-    u8g2.drawStr(2, 38, valBuf);
-    u8g2.drawStr(2, 50, "< X: adjust >");
-    u8g2.drawStr(2, 62, "Btn: record");
-    u8g2.sendBuffer();
+      tft.fillRect(BX, BY + BH + 8, BW, 22, C_BG);
+      char valBuf[32];
+      snprintf(valBuf, sizeof(valBuf), "Duration: %ds", secs);
+      tft.setTextColor(TFT_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(BX, BY + BH + 10);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     unsigned long now = millis();
@@ -296,10 +651,45 @@ static float s_tremoloLevel = 0.3f;
 static float s_hauntedLevel = 0.5f;
 static float s_alienLevel   = 0.5f;
 static float s_monsterLevel = 0.5f;
-static float s_chorusLevel   = 0.5f;
+static float s_chorusLevel    = 0.5f;
+static float s_telephoneLevel = 0.3f;  // 0→300 Hz (mild), 1→2000 Hz (very tinny)
+static float s_wavefoldLevel  = 0.3f;  // 0→threshold 30000 (subtle), 1→2000 (extreme)
+// Gate threshold for Live FX feedback suppression (runtime, saved to prefs)
+// Range 0-5000 on raw ADC scale; maps to s_gateLevel 0.0-1.0 for the slider.
+static float g_gate_threshold = PASSTHROUGH_GATE_THRESHOLD;
+static float s_gateLevel      = PASSTHROUGH_GATE_THRESHOLD / 5000.0f;
+// Separate output gain for live FX — lower ceiling than playback to reduce loop gain.
+// Range 0.5-6.0x; default 2.5x keeps headroom below the feedback threshold.
+static float g_live_gain      = 2.5f;
+static float s_liveGainLevel  = (2.5f - 0.5f) / 5.5f;
+// Mic input gain: software pre-amp applied to raw I2S samples during recording.
+// <1.0 reduces clipping on loud sources; >1.0 boosts weak mics (normalization handles quiet mics too).
+static float g_mic_gain       = 1.0f;
+static float s_micGainLevel   = (1.0f - 0.1f) / 1.9f;  // slider maps 0.1x–2.0x
 // volume: maps [0,1] to gain [0.5, 10.0]; 0.579 ≈ DEFAULT_PLAYBACK_GAIN=6.0
 static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
+
+// Theremin sound source
+static const char *TH_SOUND_NAMES[] = { "Sine", "Kitten", "Beavis", "Nana", "String" };
+static const char *TH_PITCH_SRC_NAMES[] = { "Joystick", "Sonar" };
+static const int   TH_PITCH_SRC_COUNT   = 2;
+static int         g_th_pitch_src       = 0;  // 0=joystick Y, 1=HC-SR04
+static const char *TH_SOUND_PATHS[] = { nullptr, "/kitten.wav", "/rizz.wav", "/nana.wav", nullptr };
+static const int   TH_SOUND_COUNT   = 5;
+static int         g_th_sound       = 0;  // 0=Sine 1=Kitten 2=Rizz
+
+// Mood background music
+static const char *MOOD_NAMES[] = { "None", "Exciting", "Happy", "Romantica", "Sad", "Powerful", "Scary" };
+static const char *MOOD_PATHS[] = { nullptr, "/exciting.wav", "/happy.wav", "/romantica.wav", "/sad.wav", "/powerful.wav", "/scary.wav" };
+static const int   MOOD_COUNT   = 7;
+static int      g_mood            = 0;    // 0=none 1=exciting 2=happy 3=romantica 4=sad
+static uint32_t g_mood_data_start = 0;   // byte offset of PCM data in WAV file
+static uint32_t g_mood_data_size  = 0;   // total PCM bytes
+static uint32_t g_mood_byte_pos   = 0;   // current byte position within PCM data (for looping)
+static File     g_mood_file;             // open only during active playback
+static float g_mood_gain    = MOOD_MUSIC_GAIN;  // runtime-adjustable, saved to NVS
+static float s_moodVolLevel = MOOD_MUSIC_GAIN / 0.5f; // 0-1 maps gain 0.0-0.5
 
 // Shows a full-screen sub-menu for adjusting a single effect parameter.
 // Joystick X moves the level left/right in 5% steps; button confirms and returns the level.
@@ -311,30 +701,34 @@ static float showLevelSubMenu(const char *title, const char *paramLabel,
   unsigned long lastMoveMs = 0;
   while (isJoystickButtonPressed()) delay(10);
 
+  const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+  float prevLevel = -1.0f;
+
+  // Static parts drawn once
+  tft.fillScreen(C_BG);
+  drawHeader(title);
+  drawHints("< >: adjust   Y: back", "Btn: play");
+
   while (true)
   {
-    float actualVal = minVal + level * (maxVal - minVal);
+    // Only redraw bar + value when level changes
+    if (level != prevLevel)
+    {
+      prevLevel = level;
+      float actualVal = minVal + level * (maxVal - minVal);
+      drawProgressBar(BX, BY, BW, BH, level);
 
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, title);
-
-    // Filled progress bar
-    const int BX = 2, BY = 16, BW = 124, BH = 10;
-    u8g2.drawFrame(BX, BY, BW, BH);
-    int filled = (int)(level * (BW - 2));
-    if (filled > 0)
-      u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
-
-    char valBuf[32];
-    if (unit[0] == 'x')
-      snprintf(valBuf, sizeof(valBuf), "%s: %.2f%s", paramLabel, actualVal, unit);
-    else
-      snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
-    u8g2.drawStr(2, 38, valBuf);
-    u8g2.drawStr(2, 50, "< >:adjust  Y:back");
-    u8g2.drawStr(2, 62, "Btn: play");
-    u8g2.sendBuffer();
+      tft.fillRect(BX, BY + BH + 8, BW, 22, C_BG);
+      char valBuf[32];
+      if (unit[0] == 'x')
+        snprintf(valBuf, sizeof(valBuf), "%s: %.2f%s", paramLabel, actualVal, unit);
+      else
+        snprintf(valBuf, sizeof(valBuf), "%s: %.0f%s", paramLabel, actualVal, unit);
+      tft.setTextColor(TFT_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(BX, BY + BH + 10);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     int y = readJoystickAxis(JOY_Y_PIN);
@@ -368,17 +762,27 @@ static int showPassthroughFxSubMenu()
   int sel = 0;
   unsigned long lastMoveMs = 0;
 
+  int prevSel = -1;
+  tft.fillScreen(C_BG);
+  drawHeader("Passthrough FX");
+  drawHints("< X: choose >", "Btn: start");
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, "Passthrough FX");
-    char valBuf[32];
-    snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
-    u8g2.drawStr(2, 30, valBuf);
-    u8g2.drawStr(2, 50, "< X: choose >");
-    u8g2.drawStr(2, 62, "Btn: start");
-    u8g2.sendBuffer();
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillRect(4, 50, TFT_W - 8, 22, C_BG);
+      tft.setTextColor(TFT_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(8, 100);
+      char valBuf[32];
+      snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
+      // Fill old text area, then draw new
+      tft.fillRect(4, 90, TFT_W - 8, 22, C_BG);
+      tft.setCursor(8, 90);
+      tft.print(valBuf);
+    }
 
     int x = readJoystickAxis(JOY_X_PIN);
     unsigned long now = millis();
@@ -398,45 +802,21 @@ static int showPassthroughFxSubMenu()
 
 static int showLongPlayFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
-  const int NUM_CHOICES = 7;
-  int sel = 0;
-  unsigned long lastMoveMs = 0;
-  while (isJoystickButtonPressed()) delay(10);
-
-  while (true)
-  {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(2, 10, "Long Play FX");
-    char valBuf[32];
-    snprintf(valBuf, sizeof(valBuf), "FX: %s", choices[sel]);
-    u8g2.drawStr(2, 30, valBuf);
-    u8g2.drawStr(2, 50, "< X: choose >");
-    u8g2.drawStr(2, 62, "Btn: play");
-    u8g2.sendBuffer();
-
-    int x = readJoystickAxis(JOY_X_PIN);
-    unsigned long now = millis();
-    if (x != 0 && now - lastMoveMs > 200)
-    {
-      sel = (sel + x + NUM_CHOICES) % NUM_CHOICES;
-      lastMoveMs = now;
-    }
-    if (isJoystickButtonPressed())
-    {
-      while (isJoystickButtonPressed()) delay(10);
-      return sel;
-    }
-    delay(20);
-  }
+  static const char *labels[] = {
+    "Plain",    "Echo",      "Star Fghtr", "Tremolo",   "Chorus",
+    "Pitch Up", "Pitch Dn",  "Stutter",    "Monster",   "Alien",
+    "Telephone","Wavefold"
+  };
+  static const uint8_t *icons[] = {
+    ICON_PLAY,    ICON_ECHO,     ICON_RINGMOD,   ICON_TREMOLO, ICON_CHORUS,
+    ICON_PITCH,   ICON_PITCH,    ICON_STUTTER,   ICON_MONSTER, ICON_ALIEN,
+    ICON_TELEPHONE, ICON_WAVEFOLD
+  };
+  static int sel = 0;
+  return showIconList(labels, icons, 12, sel);
 }
 
-static const char *slotPath(int slot)
-{
-  static const char *paths[3] = { "/rec1.pcm", "/rec2.pcm", "/rec3.pcm" };
-  return (slot >= 1 && slot <= 3) ? paths[slot - 1] : paths[0];
-}
+static const char *autoSlotPath() { return "/rec_auto.pcm"; }
 
 static const char *longSlotPath(int slot)
 {
@@ -451,33 +831,49 @@ static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int m
   int slot = 1;
   unsigned long lastMoveMs = 0;
 
+  int prevSlot = -1;
+  char hdrBuf[32];
+  snprintf(hdrBuf, sizeof(hdrBuf), "%s  1/%d", action, maxSlots);
+
+  tft.fillScreen(C_BG);
+  drawHeader(hdrBuf);
+  char btnLine[32];
+  snprintf(btnLine, sizeof(btnLine), "Btn: %s", action);
+  drawHints("< >: pick   Y: back", btnLine);
+
   while (true)
   {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    char title[32];
-    snprintf(title, sizeof(title), "%s — slot %d / %d", action, slot, maxSlots);
-    u8g2.drawStr(2, 10, title);
+    if (slot != prevSlot)
+    {
+      prevSlot = slot;
+      // Update header slot number
+      snprintf(hdrBuf, sizeof(hdrBuf), "%s  %d/%d", action, slot, maxSlots);
+      fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+      tft.fillRect(0, 0, 4, 36, TFT_CYAN);
+      tft.setTextColor(TFT_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(10, 10);
+      tft.print(hdrBuf);
 
-    File f = LittleFS.open(pathFn(slot), "r");
-    char status[32];
-    if (f)
-    {
-      int32_t n = 0;
-      f.read((uint8_t *)&n, sizeof(n));
-      f.close();
-      snprintf(status, sizeof(status), "%ds recording", n / SAMPLE_RATE);
+      File f = LittleFS.open(pathFn(slot), "r");
+      char status[32];
+      if (f)
+      {
+        int32_t n = 0;
+        f.read((uint8_t *)&n, sizeof(n));
+        f.close();
+        snprintf(status, sizeof(status), "%ds recording", n / SAMPLE_RATE);
+      }
+      else
+      {
+        snprintf(status, sizeof(status), "empty");
+      }
+      tft.fillRect(4, 50, TFT_W - 8, 22, C_BG);
+      tft.setTextColor(TFT_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(8, 60);
+      tft.print(status);
     }
-    else
-    {
-      snprintf(status, sizeof(status), "empty");
-    }
-    u8g2.drawStr(2, 30, status);
-    u8g2.drawStr(2, 50, "< >: pick   Y: back");
-    char btnLine[32];
-    snprintf(btnLine, sizeof(btnLine), "Btn: %s", action);
-    u8g2.drawStr(2, 62, btnLine);
-    u8g2.sendBuffer();
 
     int x = readJoystickAxis(JOY_X_PIN);
     int y = readJoystickAxis(JOY_Y_PIN);
@@ -502,15 +898,11 @@ static int showSlotSubMenu(const char *action, const char *(*pathFn)(int), int m
   }
 }
 
-static void saveRecording(int slot)
+static void saveRecordingAuto()
 {
-  if (!LittleFS.begin(true)) { drawStatus("Save failed!", "FS error"); delay(1500); return; }
-
-  const char *path = slotPath(slot);
-  drawStatus("Saving...", path);
-
+  const char *path = autoSlotPath();
   File f = LittleFS.open(path, "w");
-  if (!f) { drawStatus("Save failed!", "Open error"); delay(1500); return; }
+  if (!f) return;
 
   int32_t count = active_sample_count;
   f.write((uint8_t *)&count, sizeof(count));
@@ -522,43 +914,31 @@ static void saveRecording(int slot)
     f.write((uint8_t *)(record_buffer + i), n * sizeof(int16_t));
   }
   f.close();
-
-  char info[32];
-  snprintf(info, sizeof(info), "%ds -> %s", count / SAMPLE_RATE, path);
-  drawStatus("Saved!", info);
-  delay(1200);
 }
 
-static void loadRecording(int slot)
+static bool loadRecordingAuto()
 {
-  if (!LittleFS.begin(true)) { drawStatus("Load failed!", "FS error"); delay(1500); return; }
-
-  const char *path = slotPath(slot);
-  drawStatus("Loading...", path);
-
+  const char *path = autoSlotPath();
+  if (!LittleFS.exists(path)) return false;
   File f = LittleFS.open(path, "r");
-  if (!f) { drawStatus("Slot empty", "Nothing saved"); delay(1500); return; }
+  if (!f) return false;
 
   int32_t count = 0;
   if (f.read((uint8_t *)&count, sizeof(count)) != sizeof(count) ||
-      count <= 0 || count > SAMPLE_RATE * 10)
+      count <= 0 || count > SAMPLE_RATE * g_max_record_secs)
   {
-    f.close(); drawStatus("Load failed!", "Bad file"); delay(1500); return;
+    f.close(); return false;
   }
 
   size_t want = count * sizeof(int16_t);
   size_t got  = f.read((uint8_t *)record_buffer, want);
   f.close();
 
-  if (got < want) { drawStatus("Load failed!", "Truncated"); delay(1500); return; }
+  if (got < want) return false;
 
   active_sample_count = count;
   g_has_recording = true;
-
-  char info[32];
-  snprintf(info, sizeof(info), "%ds from %s", count / SAMPLE_RATE, path);
-  drawStatus("Loaded!", info);
-  delay(1200);
+  return true;
 }
 
 static void recordToLittleFS(int durationSecs, const char *path)
@@ -595,18 +975,19 @@ static void recordToLittleFS(int durationSecs, const char *path)
     if (written % (SAMPLE_RATE / 2) < STAGE)
     {
       int elapsed = (int)(written / SAMPLE_RATE);
-      u8g2.clearBuffer();
-      u8g2.setFont(u8g2_font_6x10_tf);
-      u8g2.drawStr(2, 10, "Long Record");
-      const int BX = 2, BY = 16, BW = 124, BH = 10;
-      u8g2.drawFrame(BX, BY, BW, BH);
-      int filled = (int)((float)written / plannedSamples * (BW - 2));
-      if (filled > 0) u8g2.drawBox(BX + 1, BY + 1, filled, BH - 2);
-      char timeBuf[32];
-      snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
-      u8g2.drawStr(2, 38, timeBuf);
-      u8g2.drawStr(2, 62, "Btn: stop early");
-      u8g2.sendBuffer();
+      {
+        const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+        tft.fillScreen(C_BG);
+        drawHeader("Stored Rec");
+        drawProgressBar(BX, BY, BW, BH, (float)written / plannedSamples);
+        char timeBuf[32];
+        snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", elapsed, durationSecs);
+        tft.setTextColor(TFT_CYAN);
+        tft.setTextSize(2);
+        tft.setCursor(BX, BY + BH + 10);
+        tft.print(timeBuf);
+        drawHints("Btn: stop early");
+      }
     }
 
     int toRead = min((int32_t)STAGE, plannedSamples - written);
@@ -615,6 +996,16 @@ static void recordToLittleFS(int durationSecs, const char *path)
     int samplesRead = bytesRead / sizeof(int16_t);
     if (samplesRead > 0)
     {
+      if (g_mic_gain != 1.0f)
+      {
+        for (int i = 0; i < samplesRead; ++i)
+        {
+          int32_t s = (int32_t)(stage[i] * g_mic_gain);
+          if (s > INT16_MAX) s = INT16_MAX;
+          if (s < INT16_MIN) s = INT16_MIN;
+          stage[i] = (int16_t)s;
+        }
+      }
       f.write((uint8_t *)stage, samplesRead * sizeof(int16_t));
       written += samplesRead;
     }
@@ -625,6 +1016,21 @@ static void recordToLittleFS(int durationSecs, const char *path)
       break;
     }
     yield();
+  }
+
+  // Draw final 100% state so the bar doesn't linger at "1s remaining"
+  {
+    const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+    int finalSecs = (int)(written / SAMPLE_RATE);
+    tft.fillScreen(C_BG);
+    drawHeader("Stored Rec");
+    drawProgressBar(BX, BY, BW, BH, 1.0f);
+    char timeBuf[32];
+    snprintf(timeBuf, sizeof(timeBuf), "%ds / %ds", finalSecs, finalSecs);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(2);
+    tft.setCursor(BX, BY + BH + 10);
+    tft.print(timeBuf);
   }
 
   f.close();
@@ -643,9 +1049,10 @@ static void recordToLittleFS(int durationSecs, const char *path)
   delay(1200);
 }
 
-// fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus
+// fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=pitch up 6=pitch dn 7=stutter 8=monster 9=alien 10=telephone 11=wavefold
 static void playFromLittleFSWithEffect(int fx, const char *path)
 {
+  openMoodPlayback();
   if (!LittleFS.begin(true)) { drawStatus("FS Error", "LittleFS failed"); delay(1500); return; }
 
   File f = LittleFS.open(path, "r");
@@ -658,6 +1065,13 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   }
   int32_t fileSamples = (f.size() - sizeof(int32_t)) / sizeof(int16_t);
   int32_t totalSamples = min(headerSamples, fileSamples);
+  if (g_waveform_visible)
+  {
+    g_wf_total = totalSamples;
+    fillStoredWaveformBuf(f, totalSamples);
+    g_wf_use_peaks = true;
+    drawWaveformScreen("Stored Play");
+  }
 
   // Pitch Up — granular synthesis, duration-preserving (early return)
   if (fx == 5)
@@ -669,7 +1083,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const int   PB_GAP   = 100;   // min read-to-write gap
     const float PB_RATE  = 1.5f;  // pitch factor (1 fifth up)
 
-    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring)
     {
       // fallback: plain playback
@@ -681,12 +1095,15 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
         if (got == 0) break;
         for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        mixMoodInto(pb, got);
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
         played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) break;
       }
       f.close();
+      closeMoodPlayback();
       stopTxAndFlush();
       return;
     }
@@ -788,9 +1205,11 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
 
       if (outIdx >= FS)
       {
+        mixMoodInto(outBuf, outIdx);
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
         outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) cancelled = true;
       }
       played++;
@@ -798,12 +1217,14 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
 
     if (outIdx > 0)
     {
+      mixMoodInto(outBuf, outIdx);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
     }
 
     free(ring);
     f.close();
+    closeMoodPlayback();
     stopTxAndFlush();
     return;
   }
@@ -818,7 +1239,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const int   PB_GAP   = 100;
     const float PB_RATE  = 0.67f;  // pitch factor (1 fifth down)
 
-    int16_t *ring = (int16_t *)calloc(PB_LEN, sizeof(int16_t));
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring)
     {
       int16_t pb[128];
@@ -829,12 +1250,15 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
         if (got == 0) break;
         for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        mixMoodInto(pb, got);
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
         played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) break;
       }
       f.close();
+      closeMoodPlayback();
       stopTxAndFlush();
       return;
     }
@@ -936,9 +1360,11 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
 
       if (outIdx >= FS)
       {
+        mixMoodInto(outBuf, outIdx);
         size_t bw = 0;
         i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
         outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
         if (isJoystickButtonPressed()) cancelled = true;
       }
       played++;
@@ -946,12 +1372,366 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
 
     if (outIdx > 0)
     {
+      mixMoodInto(outBuf, outIdx);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
     }
 
     free(ring);
     f.close();
+    closeMoodPlayback();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Stutter: repeat each 100ms chunk 3 times by seeking back in the file
+  if (fx == 7)
+  {
+    const int STUTTER_SAMPLES = (int)(0.100f * SAMPLE_RATE);
+    const int STUTTER_REPEATS = 3;
+    const int WCHUNK = 256;
+    int16_t wbuf[WCHUNK];
+    int32_t played = 0;
+
+    while (played < totalSamples)
+    {
+      int32_t chunkLen   = min((int32_t)STUTTER_SAMPLES, totalSamples - played);
+      size_t  chunkStart = f.position();
+
+      for (int rep = 0; rep < STUTTER_REPEATS; ++rep)
+      {
+        f.seek(chunkStart);
+        int32_t repDone = 0;
+        while (repDone < chunkLen)
+        {
+          int toRead = (int)min((int32_t)WCHUNK, chunkLen - repDone);
+          int got = (int)(f.read((uint8_t *)wbuf, toRead * sizeof(int16_t)) / sizeof(int16_t));
+          if (got == 0) break;
+          for (int i = 0; i < got; ++i) wbuf[i] = applyPlaybackGain(wbuf[i]);
+          mixMoodInto(wbuf, got);
+          size_t bw = 0;
+          i2s_write(I2S_TX_PORT, wbuf, got * sizeof(int16_t), &bw, portMAX_DELAY);
+          repDone += got;
+        }
+      }
+
+      played += chunkLen;
+      f.seek(chunkStart + (size_t)chunkLen * sizeof(int16_t));
+      if (g_waveform_visible) drawWaveformPlayhead((int)played);
+      if (isJoystickButtonPressed()) break;
+    }
+
+    f.close();
+    closeMoodPlayback();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Monster: pitch-down granular + 300ms echo
+  if (fx == 8)
+  {
+    int32_t played = 0;
+    const int   PB_LEN   = 2048;
+    const int   PB_GRAIN = 441;
+    const int   PB_FADE  = 48;
+    const int   PB_GAP   = 100;
+    const float PB_RATE  = 0.67f;
+
+    const int MON_ECHO_LEN = (int)(0.30f * SAMPLE_RATE) + 1;
+    const float MON_DECAY  = 0.45f;
+    int16_t *monEcho = (int16_t *)heap_caps_calloc(MON_ECHO_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    int monEchoWr = 0;
+
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    if (!ring)
+    {
+      if (monEcho) free(monEcho);
+      int16_t pb[128];
+      while (played < totalSamples)
+      {
+        int32_t rem = totalSamples - played;
+        int n = (int)(rem < 128 ? rem : 128);
+        int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
+        if (got == 0) break;
+        for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        mixMoodInto(pb, got);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
+        played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) break;
+      }
+      f.close();
+      closeMoodPlayback();
+      stopTxAndFlush();
+      return;
+    }
+
+    const int FS = 128;
+    int16_t fstage[FS];
+    int fstageIdx = 0, fstageLen = 0;
+    int32_t fileConsumed = 0;
+    int32_t pitchWPos = 0;
+    float pitchRPos = 0.0f, pitchRPos2 = 0.0f;
+    int pitchFade = 0;
+
+    while (pitchWPos < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+    {
+      if (fstageIdx >= fstageLen)
+      {
+        int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+        fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+        fstageIdx = 0;
+        if (fstageLen == 0) break;
+      }
+      ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+      pitchWPos++; fileConsumed++;
+    }
+
+    int16_t outBuf[FS];
+    int outIdx = 0;
+    bool cancelled = false;
+
+    while (played < totalSamples && !cancelled)
+    {
+      if (fileConsumed < totalSamples)
+      {
+        if (fstageIdx >= fstageLen)
+        {
+          int32_t _rem = totalSamples - fileConsumed;
+          int want = (int)(_rem < FS ? _rem : FS);
+          fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+          fstageIdx = 0;
+        }
+        if (fstageIdx < fstageLen)
+        {
+          ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+          pitchWPos++; fileConsumed++;
+        }
+      }
+
+      float outF;
+      if (pitchFade > 0)
+      {
+        float alpha = (float)pitchFade / PB_FADE;
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr1 = pitchRPos - floorf(pitchRPos);
+        float s1 = (1.0f - fr1) * ring[i0] + fr1 * ring[(i0 + 1) % PB_LEN];
+        int j0 = (int)pitchRPos2 % PB_LEN;
+        float fr2 = pitchRPos2 - floorf(pitchRPos2);
+        float s2 = (1.0f - fr2) * ring[j0] + fr2 * ring[(j0 + 1) % PB_LEN];
+        outF = (1.0f - alpha) * s1 + alpha * s2;
+        pitchRPos2 += PB_RATE; pitchFade--;
+      }
+      else
+      {
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr = pitchRPos - floorf(pitchRPos);
+        outF = (1.0f - fr) * ring[i0] + fr * ring[(i0 + 1) % PB_LEN];
+      }
+      pitchRPos += PB_RATE;
+
+      if ((pitchWPos - (int)pitchRPos) > PB_LEN / 2)
+      {
+        pitchRPos2 = pitchRPos;
+        pitchRPos += (float)PB_GRAIN;
+        pitchFade = PB_FADE;
+      }
+
+      if (pitchWPos > PB_LEN * 16)
+      {
+        int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
+        pitchWPos -= sub;
+        pitchRPos -= (float)sub;
+        pitchRPos2 -= (float)sub;
+      }
+
+      // Apply echo on top of pitch-shifted sample
+      int32_t pitched = (int32_t)outF;
+      if (pitched > INT16_MAX) pitched = INT16_MAX;
+      if (pitched < INT16_MIN) pitched = INT16_MIN;
+      int32_t out = pitched + (int32_t)(monEcho[monEchoWr] * MON_DECAY);
+      if (out > INT16_MAX) out = INT16_MAX;
+      if (out < INT16_MIN) out = INT16_MIN;
+      monEcho[monEchoWr] = (int16_t)out;
+      monEchoWr = (monEchoWr + 1) % MON_ECHO_LEN;
+
+      outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
+
+      if (outIdx >= FS)
+      {
+        mixMoodInto(outBuf, outIdx);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+        outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) cancelled = true;
+      }
+      played++;
+    }
+
+    if (outIdx > 0)
+    {
+      mixMoodInto(outBuf, outIdx);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+
+    free(ring);
+    if (monEcho) free(monEcho);
+    f.close();
+    closeMoodPlayback();
+    stopTxAndFlush();
+    return;
+  }
+
+  // Alien: pitch-up granular + ring modulation
+  if (fx == 9)
+  {
+    int32_t played = 0;
+    const int   PB_LEN   = 2048;
+    const int   PB_GRAIN = 441;
+    const int   PB_FADE  = 48;
+    const int   PB_GAP   = 100;
+    const float PB_RATE  = 1.5f;
+    const float RING_FREQ = 50.0f;
+    float ringPhase = 0.0f;
+
+    int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    if (!ring)
+    {
+      int16_t pb[128];
+      while (played < totalSamples)
+      {
+        int32_t rem = totalSamples - played;
+        int n = (int)(rem < 128 ? rem : 128);
+        int got = (int)(f.read((uint8_t *)pb, n * sizeof(int16_t)) / sizeof(int16_t));
+        if (got == 0) break;
+        for (int i = 0; i < got; ++i) pb[i] = applyPlaybackGain(pb[i]);
+        mixMoodInto(pb, got);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, pb, got * sizeof(int16_t), &bw, portMAX_DELAY);
+        played += got;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) break;
+      }
+      f.close();
+      closeMoodPlayback();
+      stopTxAndFlush();
+      return;
+    }
+
+    const int FS = 128;
+    int16_t fstage[FS];
+    int fstageIdx = 0, fstageLen = 0;
+    int32_t fileConsumed = 0;
+    int32_t pitchWPos = 0;
+    float pitchRPos = 0.0f, pitchRPos2 = 0.0f;
+    int pitchFade = 0;
+
+    while (pitchWPos < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+    {
+      if (fstageIdx >= fstageLen)
+      {
+        int32_t _rem = totalSamples - fileConsumed;
+        int want = (int)(_rem < FS ? _rem : FS);
+        fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+        fstageIdx = 0;
+        if (fstageLen == 0) break;
+      }
+      ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+      pitchWPos++; fileConsumed++;
+    }
+
+    int16_t outBuf[FS];
+    int outIdx = 0;
+    bool cancelled = false;
+
+    while (played < totalSamples && !cancelled)
+    {
+      while ((pitchWPos - (int)pitchRPos) < PB_GRAIN + PB_GAP && fileConsumed < totalSamples)
+      {
+        if (fstageIdx >= fstageLen)
+        {
+          int32_t _rem = totalSamples - fileConsumed;
+          int want = (int)(_rem < FS ? _rem : FS);
+          fstageLen = (int)(f.read((uint8_t *)fstage, want * sizeof(int16_t)) / sizeof(int16_t));
+          fstageIdx = 0;
+          if (fstageLen == 0) break;
+        }
+        ring[pitchWPos % PB_LEN] = fstage[fstageIdx++];
+        pitchWPos++; fileConsumed++;
+      }
+
+      float outF;
+      if (pitchFade > 0)
+      {
+        float alpha = (float)pitchFade / PB_FADE;
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr1 = pitchRPos - floorf(pitchRPos);
+        float s1 = (1.0f - fr1) * ring[i0] + fr1 * ring[(i0 + 1) % PB_LEN];
+        int j0 = (int)pitchRPos2 % PB_LEN;
+        float fr2 = pitchRPos2 - floorf(pitchRPos2);
+        float s2 = (1.0f - fr2) * ring[j0] + fr2 * ring[(j0 + 1) % PB_LEN];
+        outF = (1.0f - alpha) * s1 + alpha * s2;
+        pitchRPos2 += PB_RATE; pitchFade--;
+      }
+      else
+      {
+        int i0 = (int)pitchRPos % PB_LEN;
+        float fr = pitchRPos - floorf(pitchRPos);
+        outF = (1.0f - fr) * ring[i0] + fr * ring[(i0 + 1) % PB_LEN];
+      }
+      pitchRPos += PB_RATE;
+
+      if ((pitchWPos - (int)pitchRPos) < PB_GAP)
+      {
+        pitchRPos2 = pitchRPos;
+        pitchRPos -= (float)PB_GRAIN;
+        pitchFade = PB_FADE;
+      }
+
+      if (pitchWPos > PB_LEN * 16)
+      {
+        int sub = (pitchWPos / PB_LEN - 8) * PB_LEN;
+        pitchWPos -= sub;
+        pitchRPos -= (float)sub;
+        pitchRPos2 -= (float)sub;
+      }
+
+      // Ring mod applied to pitch-shifted output
+      float mod = sinf(2.0f * 3.14159265f * ringPhase);
+      ringPhase += RING_FREQ / SAMPLE_RATE;
+      if (ringPhase >= 1.0f) ringPhase -= 1.0f;
+      int32_t out = (int32_t)(outF * mod);
+      if (out > INT16_MAX) out = INT16_MAX;
+      if (out < INT16_MIN) out = INT16_MIN;
+
+      outBuf[outIdx++] = applyPlaybackGain((int16_t)out);
+
+      if (outIdx >= FS)
+      {
+        mixMoodInto(outBuf, outIdx);
+        size_t bw = 0;
+        i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+        outIdx = 0;
+        if (g_waveform_visible) drawWaveformPlayhead((int)played);
+        if (isJoystickButtonPressed()) cancelled = true;
+      }
+      played++;
+    }
+
+    if (outIdx > 0)
+    {
+      mixMoodInto(outBuf, outIdx);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, outBuf, outIdx * sizeof(int16_t), &bw, portMAX_DELAY);
+    }
+
+    free(ring);
+    f.close();
+    closeMoodPlayback();
     stopTxAndFlush();
     return;
   }
@@ -962,7 +1742,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   int echoWr = 0;
   if (fx == 1)
   {
-    echoBuf = (int16_t *)calloc(ECHO_LEN, sizeof(int16_t));
+    echoBuf = (int16_t *)heap_caps_calloc(ECHO_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!echoBuf) fx = 0;
   }
 
@@ -973,16 +1753,31 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   float chorusPhase = 0.0f;
   if (fx == 4)
   {
-    chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+    chorusBuf = (int16_t *)heap_caps_calloc(CHORUS_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!chorusBuf) fx = 0;
   }
 
-  // Phase accumulators for math-only effects
+  // Phase accumulators and filter state for math-only effects
   float ringPhase = 0.0f;
   float tremPhase = 0.0f;
   const float RING_FREQ  = 50.0f;
   const float TREM_RATE  = 6.0f;
   const float TREM_DEPTH = 0.85f;
+  // Telephone HP+LP filter state (fx==10)
+  float tel_hp_x1 = 0.0f, tel_hp_y1 = 0.0f, tel_lp_y1 = 0.0f;
+  float tel_hp_a  = 0.0f, tel_lp_b   = 0.0f;
+  if (fx == 10) {
+    const float PI2 = 2.0f * 3.14159265f;
+    const float DT  = 1.0f / SAMPLE_RATE;
+    float hp_tau  = 1.0f / (PI2 * 800.0f);   // ~800 Hz high-pass cutoff
+    tel_hp_a      = hp_tau / (hp_tau + DT);
+    float lp_tau  = 1.0f / (PI2 * 4000.0f);  // ~4 kHz low-pass ceiling
+    tel_lp_b      = DT    / (lp_tau + DT);
+  }
+
+  // Wavefold (fx==11): fold at threshold 4000, then normalise to full scale
+  const float WF_THRESH   = 4000.0f;
+  const float WF_OUT_GAIN = (float)INT16_MAX / WF_THRESH;
 
   const int CHUNK = 256;
   int16_t chunk[CHUNK];
@@ -1044,13 +1839,39 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
         if (out < INT16_MIN) out = INT16_MIN;
         s = out;
       }
+      else if (fx == 10)  // telephone HP+LP band-pass
+      {
+        float x   = (float)s;
+        float yhp = tel_hp_a * (tel_hp_y1 + x - tel_hp_x1);
+        tel_hp_x1 = x; tel_hp_y1 = yhp;
+        float ylp = tel_lp_b * yhp + (1.0f - tel_lp_b) * tel_lp_y1;
+        tel_lp_y1 = ylp;
+        int32_t out = (int32_t)ylp;
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
+      else if (fx == 11)  // wavefold: fold at WF_THRESH, normalise to full scale
+      {
+        float fs = (float)s;
+        if (fs > WF_THRESH)
+          fs = WF_THRESH - (fs - WF_THRESH);
+        else if (fs < -WF_THRESH)
+          fs = -WF_THRESH - (fs + WF_THRESH);
+        int32_t out = (int32_t)(fs * WF_OUT_GAIN);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        s = out;
+      }
 
       chunk[i] = applyPlaybackGain((int16_t)s);
     }
 
+    mixMoodInto(chunk, samplesRead);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, samplesRead * sizeof(int16_t), &bw, portMAX_DELAY);
     played += samplesRead;
+    if (g_waveform_visible) drawWaveformPlayhead((int)played);
 
     if (isJoystickButtonPressed()) break;
   }
@@ -1058,46 +1879,59 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
   f.close();
   if (echoBuf)   free(echoBuf);
   if (chorusBuf) free(chorusBuf);
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
-static int showEffectsSubMenu()
+
+
+static int showSettingsSubMenu()
 {
-  static int sel = MENU_ROOT_COUNT;
+  static int sel = MENU_STORAGE_COUNT;
   unsigned long lastMoveMs = 0;
-  const int effectCount = MENU_COUNT - MENU_ROOT_COUNT;
+  const int settingsCount = MENU_SETTINGS_COUNT - MENU_STORAGE_COUNT;
   while (isJoystickButtonPressed()) delay(10);
+
+  int prevSel = -1;
 
   while (true)
   {
-    const int visibleCount = 5;
-    int relSel = sel - MENU_ROOT_COUNT;
-    int startIdx = relSel - visibleCount / 2;
-    if (startIdx < 0) startIdx = 0;
-    if (startIdx > effectCount - visibleCount) startIdx = effectCount - visibleCount;
-
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-
-    for (int i = 0; i < visibleCount; ++i)
+    if (sel != prevSel)
     {
-      int itemEnum = MENU_ROOT_COUNT + startIdx + i;
-      int y = 11 + i * 12;
-      if (itemEnum == sel)
-      {
-        u8g2.drawBox(0, y - 10, 128, 12);
-        u8g2.setDrawColor(0);
-        u8g2.drawStr(2, y, menuLabels[itemEnum]);
-        u8g2.setDrawColor(1);
-      }
-      else
-        u8g2.drawStr(2, y, menuLabels[itemEnum]);
-    }
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
 
-    if (startIdx > 0) u8g2.drawStr(110, 7, "^");
-    if (startIdx + visibleCount < effectCount) u8g2.drawStr(110, 63, "v");
-    u8g2.drawStr(0, 63, "< back");
-    u8g2.sendBuffer();
+      for (int i = 0; i < settingsCount; ++i)
+      {
+        int itemEnum = MENU_STORAGE_COUNT + i;
+        int16_t y = i * ITEM_H;
+        uint16_t iconColor;
+        if (itemEnum == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          iconColor = TFT_WHITE;
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          iconColor = 0xDEFB;
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
+        tft.setCursor(28, y + 5);
+        tft.print(menuLabels[itemEnum]);
+      }
+
+      tft.setTextSize(1);
+      tft.setTextColor(COL_GRAY);
+      tft.setCursor(4, settingsCount * ITEM_H + 4);
+      tft.print("< X: back");
+    }
 
     int y = readJoystickAxis(JOY_Y_PIN);
     int x = readJoystickAxis(JOY_X_PIN);
@@ -1107,8 +1941,8 @@ static int showEffectsSubMenu()
     {
       if (x < 0) return -1;
       sel += (y < 0 ? -1 : 1);
-      if (sel < MENU_ROOT_COUNT) sel = MENU_ROOT_COUNT;
-      if (sel >= MENU_COUNT) sel = MENU_COUNT - 1;
+      if (sel < MENU_STORAGE_COUNT) sel = MENU_STORAGE_COUNT;
+      if (sel >= MENU_SETTINGS_COUNT) sel = MENU_SETTINGS_COUNT - 1;
       lastMoveMs = now;
     }
 
@@ -1121,14 +1955,224 @@ static int showEffectsSubMenu()
   }
 }
 
+// Shared scrollable icon-list helper used by both Play and Stored Play FX pickers.
+// labels/icons must have 'count' entries. Returns selected index or -1 (back).
+static int showIconList(const char *const *labels, const uint8_t *const *icons,
+                        int count, int &sel)
+{
+  const int VISIBLE = 8;
+  unsigned long lastMoveMs = 0;
+  int prevSel = -2;
+  while (isJoystickButtonPressed()) delay(10);
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      int startIdx = sel - VISIBLE / 2;
+      if (startIdx < 0) startIdx = 0;
+      if (startIdx > count - VISIBLE) startIdx = count - VISIBLE;
+      if (startIdx < 0) startIdx = 0;
+
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < VISIBLE && (startIdx + i) < count; ++i)
+      {
+        int idx = startIdx + i;
+        int16_t y = i * ITEM_H;
+        uint16_t iconColor;
+        if (idx == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          iconColor = TFT_WHITE;
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          iconColor = 0xDEFB;
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.drawBitmap(6, y + 5, icons[idx], 16, 16, iconColor);
+        tft.setCursor(28, y + 5);
+        tft.print(labels[idx]);
+      }
+
+      if (startIdx > 0)
+      {
+        tft.setTextColor(TFT_CYAN); tft.setTextSize(1);
+        tft.setCursor(TFT_W - 10, 2); tft.print("^");
+      }
+      if (startIdx + VISIBLE < count)
+      {
+        tft.setTextColor(TFT_CYAN); tft.setTextSize(1);
+        tft.setCursor(TFT_W - 10, VISIBLE * ITEM_H - 8); tft.print("v");
+      }
+      tft.setTextSize(1);
+      tft.setTextColor(COL_GRAY);
+      tft.setCursor(4, min(count, VISIBLE) * ITEM_H + 4);
+      tft.print("< X: back");
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return -1;
+      sel += (y < 0 ? -1 : 1);
+      if (sel < 0)     sel = 0;
+      if (sel >= count) sel = count - 1;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return sel;
+    }
+    delay(10);
+  }
+}
+
+// Play FX picker: index 0 = Plain, 1-11 = effects (maps to MENU_SETTINGS_COUNT + idx - 1).
+static int showPlaySubMenu()
+{
+  static const char *labels[] = {
+    "Plain",    "Reverse",  "Pitch",   "Echo",      "Ring Mod",
+    "Stutter",  "Tremolo",  "Haunted", "Alien",     "Monster",
+    "Chorus",   "Telephone"
+  };
+  static const uint8_t *icons[] = {
+    ICON_PLAY,    ICON_REVERSE,  ICON_PITCH,    ICON_ECHO,    ICON_RINGMOD,
+    ICON_STUTTER, ICON_TREMOLO,  ICON_HAUNTED,  ICON_ALIEN,   ICON_MONSTER,
+    ICON_CHORUS,  ICON_TELEPHONE
+  };
+  static int sel = 0;
+  return showIconList(labels, icons, 12, sel);
+}
+
+// Mood picker: scrollable icon list, opens at currently active mood.
+static int showMoodPickerScreen()
+{
+  static const uint8_t *icons[] = {
+    ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD, ICON_MOOD
+  };
+  int sel = g_mood;  // start at current selection each time
+  return showIconList(MOOD_NAMES, icons, MOOD_COUNT, sel);
+}
+
+// Top-level Mood Music sub-menu: Select Mood + Mood Volume
+static void runMoodMenu()
+{
+  static const char  *items[]  = { "Select Mood", "Mood Volume" };
+  static const uint8_t *icons[] = { ICON_MOOD, ICON_VOLUME };
+  const int COUNT = 2;
+  int sel = 0;
+  unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
+
+  int prevSel = -1;
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < COUNT; ++i)
+      {
+        int16_t y = i * ITEM_H;
+        if (i == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, TFT_WHITE);
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, 0xDEFB);
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.setCursor(28, y + 5);
+        tft.print(items[i]);
+      }
+
+      // Status hints showing current state
+      char hint1[32], hint2[32];
+      snprintf(hint1, sizeof(hint1), "Mood: %s", MOOD_NAMES[g_mood]);
+      snprintf(hint2, sizeof(hint2), "Vol: %.0f%%   < X:back", s_moodVolLevel * 100.0f);
+      drawHints(hint1, hint2);
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return;
+      sel = (sel + (y < 0 ? -1 : 1) + COUNT) % COUNT;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+
+      if (sel == 0)  // Select Mood
+      {
+        int newMood = showMoodPickerScreen();
+        if (newMood >= 0 && newMood != g_mood)
+        {
+          g_mood = newMood;
+          g_prefs.putInt("mood", g_mood);
+          drawStatus("Loading...", MOOD_NAMES[g_mood]);
+          loadMoodTrack(g_mood);
+        }
+      }
+      else  // Mood Volume
+      {
+        float lvl = showLevelSubMenu("Mood Volume", "Level", s_moodVolLevel, 0.0f, 100.0f, "%");
+        if (lvl >= 0.0f)
+        {
+          s_moodVolLevel = lvl;
+          g_mood_gain = lvl * 0.5f;
+          g_prefs.putFloat("mood_vol", g_mood_gain);
+          char info[32];
+          snprintf(info, sizeof(info), "Vol: %.0f%% saved", lvl * 100.0f);
+          drawStatus("Mood vol saved!", info);
+          delay(1000);
+        }
+      }
+      prevSel = -1;  // force redraw after returning
+    }
+    delay(10);
+  }
+}
+
 void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
 
   // Block all playback effects if nothing has been recorded yet
   if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
-      && item != MENU_LOAD && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_VOLUME && item != MENU_EFFECTS)
+      && item != MENU_LONG_REC && item != MENU_LONG_PLAY
+      && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
+      && item != MENU_MIC_GAIN && item != MENU_MOOD && item != MENU_THEREMIN
+      && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -1142,43 +2186,61 @@ void runMenuAction(int item)
     {
       int durSecs = showDurationSubMenu(active_sample_count / SAMPLE_RATE);
       active_sample_count = durSecs * SAMPLE_RATE;
-      char durStr[32];
-      snprintf(durStr, sizeof(durStr), "%ds recording...", durSecs);
-      drawStatus("Recording...", durStr);
       recordToBuffer();
-      drawStatus("Recording done.", "Press button");
+      saveRecordingAuto();
+      char durStr[32];
+      snprintf(durStr, sizeof(durStr), "%ds saved  Btn:ok", durSecs);
+      drawStatus("Recording done.", durStr);
       while (!isJoystickButtonPressed()) delay(50);
       break;
     }
     case MENU_PLAY:
-      drawStatus("Playing raw...", nullptr);
-      playBufferSimple();
-      break;
-    case MENU_EFFECTS:
     {
       while (true)
       {
-        int fx = showEffectsSubMenu();
-        if (fx < 0) break;
-        runMenuAction(fx);
+        int sel = showPlaySubMenu();
+        if (sel < 0) break;
+        if (sel == 0)
+        {
+          g_waveform_visible = true;
+          drawWaveformScreen("Play");
+          playBufferSimple();
+          g_waveform_visible = false;
+        }
+        else
+        {
+          runMenuAction(MENU_SETTINGS_COUNT + sel - 1);
+        }
+      }
+      break;
+    }
+    case MENU_THEREMIN:
+      runThereminMenu();
+      drawMenu();
+      break;
+    case MENU_SETTINGS:
+    {
+      while (true)
+      {
+        int item = showSettingsSubMenu();
+        if (item < 0) break;
+        runMenuAction(item);
       }
       break;
     }
     case MENU_PASSTHROUGH:
     {
       int fx = showPassthroughFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up" };
-      char status[32];
-      snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
-      drawStatus("Passthrough", status);
       passthroughWithEffect(fx);
       drawStatus("Passthrough done", "Press button");
       while (!isJoystickButtonPressed()) delay(50);
       break;
     }
     case MENU_REVERSE:
-      drawStatus("Playing reverse...", nullptr);
+      g_waveform_visible = true;
+      drawWaveformScreen("Reverse");
       playReverse();
+      g_waveform_visible = false;
       break;
     case MENU_PITCH:
     {
@@ -1191,8 +2253,10 @@ void runMenuAction(int item)
         float speed = 0.3f + s_pitchLevel * 2.2f;
         char info[32];
         snprintf(info, sizeof(info), "Speed: %.2fx", speed);
-        drawStatus("Pitch...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Pitch");
         playResample(speed);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1207,8 +2271,10 @@ void runMenuAction(int item)
         float decay = 0.2f + s_echoLevel * 0.5f;
         char info[32];
         snprintf(info, sizeof(info), "%.0fms dec %.2f", delaySec * 1000.0f, decay);
-        drawStatus("Echo...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Echo");
         playEcho(delaySec, decay);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1222,8 +2288,10 @@ void runMenuAction(int item)
         float freq = 10.0f + s_ringmodLevel * 80.0f;
         char info[32];
         snprintf(info, sizeof(info), "Freq: %.0fHz", freq);
-        drawStatus("Star fighter...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Star fighter");
         playRingMod(freq);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1240,8 +2308,10 @@ void runMenuAction(int item)
         int repeats = 2 + (int)(s_stutterLevel * 0.04f);
         char info[32];
         snprintf(info, sizeof(info), "%.0fms x%d", chunkSec * 1000.0f, repeats);
-        drawStatus("Stutter...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Stutter");
         playStutter(chunkSec, repeats);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1255,8 +2325,10 @@ void runMenuAction(int item)
         float rate = 2.0f + s_tremoloLevel * 13.0f;
         char info[32];
         snprintf(info, sizeof(info), "Rate: %.1fHz", rate);
-        drawStatus("Tremolo...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Tremolo");
         playTremolo(rate);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1268,8 +2340,10 @@ void runMenuAction(int item)
         if (lvl < 0.0f) break;
         s_hauntedLevel = lvl;
         float decay = 0.1f + s_hauntedLevel * 0.6f;
-        drawStatus("Haunted...", "Reverse + Echo");
+        g_waveform_visible = true;
+        drawWaveformScreen("Haunted");
         playHaunted(0.25f, decay);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1283,8 +2357,10 @@ void runMenuAction(int item)
         float ringFreq = 20.0f + s_alienLevel * 60.0f;
         char info[32];
         snprintf(info, sizeof(info), "Pitch up + %.0fHz", ringFreq);
-        drawStatus("Alien...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Alien");
         playAlien(1.6f, ringFreq);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1296,8 +2372,10 @@ void runMenuAction(int item)
         if (lvl < 0.0f) break;
         s_monsterLevel = lvl;
         float decay = 0.1f + s_monsterLevel * 0.6f;
-        drawStatus("Monster...", "Pitch dn + Echo");
+        g_waveform_visible = true;
+        drawWaveformScreen("Monster");
         playMonster(0.5f, 0.3f, decay);
+        g_waveform_visible = false;
       }
       break;
     }
@@ -1312,44 +2390,70 @@ void runMenuAction(int item)
         float depth = s_chorusLevel;
         char info[32];
         snprintf(info, sizeof(info), "Rate:%.1fHz d:%.0f%%", rate, depth * 100.0f);
-        drawStatus("Chorus...", info);
+        g_waveform_visible = true;
+        drawWaveformScreen("Chorus");
         playChorus(rate, depth);
+        g_waveform_visible = false;
       }
       break;
     }
-    case MENU_SAVE:
+    case MENU_TELEPHONE:
     {
-      int slot = showSlotSubMenu("Save", slotPath, 3);
-      if (slot > 0) saveRecording(slot);
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Telephone", "HP cutoff", s_telephoneLevel, 300.0f, 2000.0f, "Hz");
+        if (lvl < 0.0f) break;
+        s_telephoneLevel = lvl;
+        float hpHz = 300.0f + lvl * 1700.0f;
+        g_waveform_visible = true;
+        drawWaveformScreen("Telephone");
+        playTelephone(hpHz);
+        g_waveform_visible = false;
+      }
       break;
     }
-    case MENU_LOAD:
+    case MENU_WAVEFOLD:
     {
-      int slot = showSlotSubMenu("Load", slotPath, 3);
-      if (slot > 0) loadRecording(slot);
+      // level 0 → threshold 30000 (gentle); level 1 → threshold 2000 (extreme harmonics)
+      for (;;)
+      {
+        float lvl = showLevelSubMenu("Wavefold", "Fold depth", s_wavefoldLevel, 0.0f, 100.0f, "%");
+        if (lvl < 0.0f) break;
+        s_wavefoldLevel = lvl;
+        float threshold = 30000.0f - lvl * 28000.0f;  // 30000 at 0%, 2000 at 100%
+        char info[32];
+        snprintf(info, sizeof(info), "Thr: %.0f", threshold);
+        g_waveform_visible = true;
+        drawWaveformScreen("Wavefold");
+        playWavefold(threshold);
+        g_waveform_visible = false;
+      }
       break;
     }
     case MENU_LONG_REC:
     {
-      int slot = showSlotSubMenu("Long Rec", longSlotPath, 2);
+      int slot = showSlotSubMenu("Stored Rec", longSlotPath, 2);
       if (slot < 0) break;
       g_long_rec_secs = showDurationSubMenu(g_long_rec_secs, 60);
       char durStr[32];
-      snprintf(durStr, sizeof(durStr), "%ds to flash...", g_long_rec_secs);
-      drawStatus("Long Record", durStr);
+      snprintf(durStr, sizeof(durStr), "%ds stored...", g_long_rec_secs);
+      drawStatus("Stored Rec", durStr);
       recordToLittleFS(g_long_rec_secs, longSlotPath(slot));
       break;
     }
     case MENU_LONG_PLAY:
     {
-      int slot = showSlotSubMenu("Long Play", longSlotPath, 2);
+      int slot = showSlotSubMenu("Stored Play", longSlotPath, 2);
       if (slot < 0) break;
       int fx = showLongPlayFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn" };
+      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien", "Telephone", "Wavefold" };
       char status[32];
       snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
-      drawStatus("Long Play...", status);
+      g_waveform_visible = true;
       playFromLittleFSWithEffect(fx, longSlotPath(slot));
+      g_waveform_visible = false;
+      g_wf_use_peaks = false;
+      g_wf_total = 0;
       break;
     }
     case MENU_VOLUME:
@@ -1367,6 +2471,61 @@ void runMenuAction(int item)
       }
       break;
     }
+    case MENU_FEEDBACK:
+    {
+      // Controls the noise gate threshold that cuts feedback in Live FX mode.
+      // Higher = gate triggers more aggressively (cuts feedback sooner).
+      float lvl = showLevelSubMenu("Feedback Gate", "Threshold", s_gateLevel, 0.0f, 5000.0f, "");
+      if (lvl >= 0.0f)
+      {
+        s_gateLevel = lvl;
+        g_gate_threshold = lvl * 5000.0f;
+        g_prefs.putFloat("gate_thresh", g_gate_threshold);
+        char info[32];
+        snprintf(info, sizeof(info), "%.0f saved", g_gate_threshold);
+        drawStatus("Gate saved!", info);
+        delay(1000);
+      }
+      break;
+    }
+    case MENU_LIVE_GAIN:
+    {
+      // Output gain used only during Live FX — kept lower than playback gain
+      // to reduce the loop gain margin that sustains feedback. Range 0.5-6x.
+      float lvl = showLevelSubMenu("Live Gain", "Gain", s_liveGainLevel, 0.5f, 6.0f, "x");
+      if (lvl >= 0.0f)
+      {
+        s_liveGainLevel = lvl;
+        g_live_gain = 0.5f + lvl * 5.5f;
+        g_prefs.putFloat("live_gain", g_live_gain);
+        char info[32];
+        snprintf(info, sizeof(info), "Gain: %.2fx saved", g_live_gain);
+        drawStatus("Live gain saved!", info);
+        delay(1000);
+      }
+      break;
+    }
+    case MENU_MIC_GAIN:
+    {
+      float lvl = showLevelSubMenu("Mic Gain", "Sensitivity", s_micGainLevel, 0.1f, 2.0f, "x");
+      if (lvl >= 0.0f)
+      {
+        s_micGainLevel = lvl;
+        g_mic_gain = 0.1f + lvl * 1.9f;
+        g_prefs.putFloat("mic_gain", g_mic_gain);
+        char info[32];
+        snprintf(info, sizeof(info), "Gain: %.2fx saved", g_mic_gain);
+        drawStatus("Mic gain saved!", info);
+        delay(1000);
+      }
+      break;
+    }
+    case MENU_CALIBRATE_JOY:
+      calibrateThereminJoy();
+      break;
+    case MENU_MOOD:
+      runMoodMenu();
+      break;
     default:
       break;
   }
@@ -1449,11 +2608,152 @@ static inline int16_t applyPlaybackGain(int16_t sample)
   return (int16_t)scaled;
 }
 
+// Validates the mood WAV and caches its PCM data offset/size for streaming during playback.
+// Only reads the header (~50 bytes) — no large allocation, safe to call during setup().
+static bool loadMoodTrack(int mood)
+{
+  g_mood_data_start = 0;
+  g_mood_data_size  = 0;
+  if (mood == 0) return true;
+  if (mood < 1 || mood >= MOOD_COUNT) { g_mood = 0; return false; }
+
+  const char *path = MOOD_PATHS[mood];
+  File f = LittleFS.open(path, "r");
+  if (!f) { Serial.printf("Mood: cannot open %s\n", path); return false; }
+
+  uint8_t riff[12];
+  if (f.read(riff, 12) != 12 || riff[0] != 'R' || riff[1] != 'I') { f.close(); return false; }
+
+  bool foundData = false;
+  uint8_t chunkHdr[8];
+  while (f.read(chunkHdr, 8) == 8)
+  {
+    uint32_t sz = (uint32_t)chunkHdr[4] | ((uint32_t)chunkHdr[5] << 8) |
+                  ((uint32_t)chunkHdr[6] << 16) | ((uint32_t)chunkHdr[7] << 24);
+    if (chunkHdr[0] == 'f' && chunkHdr[1] == 'm' && chunkHdr[2] == 't') {
+      uint8_t fmt[16]; f.read(fmt, 16);
+      if (sz > 16) f.seek(sz - 16, SeekCur);
+    } else if (chunkHdr[0] == 'd' && chunkHdr[1] == 'a' && chunkHdr[2] == 't' && chunkHdr[3] == 'a') {
+      g_mood_data_start = (uint32_t)f.position();
+      uint32_t avail    = (uint32_t)f.size() - g_mood_data_start;
+      g_mood_data_size  = (sz < avail) ? sz : avail;
+      foundData = true;
+      break;
+    } else {
+      f.seek(sz, SeekCur);
+    }
+  }
+  f.close();
+
+  if (!foundData || g_mood_data_size == 0) { Serial.printf("Mood: no data chunk in %s\n", path); return false; }
+  Serial.printf("Mood: validated %s — %.1fs PCM\n", path, (float)(g_mood_data_size / 2) / SAMPLE_RATE);
+  return true;
+}
+
+// Opens the mood WAV and seeks to the PCM data for streaming. Call at the start of playback.
+static void openMoodPlayback()
+{
+  if (g_mood == 0 || g_mood_data_size == 0) return;
+  if (g_mood_file) g_mood_file.close();
+  g_mood_byte_pos = 0;
+  g_mood_file = LittleFS.open(MOOD_PATHS[g_mood], "r");
+  if (!g_mood_file) { Serial.println("Mood: open failed"); return; }
+  g_mood_file.seek(g_mood_data_start);
+}
+
+// Closes the mood file after playback ends.
+static void closeMoodPlayback()
+{
+  if (g_mood_file) g_mood_file.close();
+}
+
+// Streams n samples from the mood file into buf[], looping at track end. No-op when not open.
+static void mixMoodInto(int16_t *buf, int n)
+{
+  if (!g_mood_file || g_mood_data_size == 0) return;
+
+  int16_t mbuf[256];  // n ≤ 256 in every playback path
+  int done = 0;
+
+  while (done < n) {
+    uint32_t left = g_mood_data_size - g_mood_byte_pos;
+    if (left == 0) {
+      g_mood_file.seek(g_mood_data_start);
+      g_mood_byte_pos = 0;
+      left = g_mood_data_size;
+    }
+    uint32_t want = (uint32_t)((n - done) * (int)sizeof(int16_t));
+    if (want > left) want = left & ~1u;  // keep whole samples
+    if (want == 0) want = 2;
+    size_t got = g_mood_file.read((uint8_t *)(mbuf + done), (size_t)want);
+    if (got == 0) break;
+    g_mood_byte_pos += (uint32_t)got;
+    done += (int)(got / sizeof(int16_t));
+  }
+
+  for (int i = 0; i < done; ++i) {
+    int32_t m = (int32_t)((float)mbuf[i] * g_mood_gain);
+    int32_t s = (int32_t)buf[i] + m;
+    if (s > INT16_MAX) s = INT16_MAX;
+    if (s < INT16_MIN) s = INT16_MIN;
+    buf[i] = (int16_t)s;
+  }
+}
+
 static void stopTxAndFlush()
 {
   i2s_stop(I2S_TX_PORT);
   i2s_zero_dma_buffer(I2S_TX_PORT);
   i2s_start(I2S_TX_PORT);
+}
+
+// Display /splash.raw from LittleFS (320×240 raw RGB565, little-endian uint16_t).
+// LittleFS f.read() is a single block DMA read — avoids the pgm_read_word
+// word-by-word flash cache stall that caused WDT reboots with PROGMEM.
+static void showColorCheck()
+{
+  struct { const char *label; uint16_t color; } swatches[] = {
+    { "RED",     TFT_RED     },
+    { "GREEN",   TFT_GREEN   },
+    { "BLUE",    TFT_BLUE    },
+    { "WHITE",   TFT_WHITE   },
+    { "BLACK",   TFT_BLACK   },
+    { "YELLOW",  TFT_YELLOW  },
+    { "CYAN",    TFT_CYAN    },
+    { "MAGENTA", TFT_MAGENTA },
+  };
+  const int N = sizeof(swatches) / sizeof(swatches[0]);
+  const int blockH = TFT_H / N;
+
+  tft.fillScreen(TFT_BLACK);
+  for (int i = 0; i < N; ++i) {
+    int y = i * blockH;
+    tft.fillRect(0, y, TFT_W, blockH, swatches[i].color);
+    uint16_t textColor = (swatches[i].color == TFT_BLACK || swatches[i].color == TFT_BLUE) ? TFT_WHITE : TFT_BLACK;
+    tft.setTextColor(textColor);
+    tft.setTextSize(2);
+    tft.setCursor(8, y + (blockH - 16) / 2);
+    tft.print(swatches[i].label);
+  }
+  delay(5000);
+}
+
+static void showSplash()
+{
+  File f = LittleFS.open("/splash.raw", "r");
+  if (!f) return;
+
+  uint16_t rowBuf[TFT_W];
+  tft.startWrite();
+  tft.setAddrWindow(0, 0, TFT_W, TFT_H);
+  for (int row = 0; row < TFT_H; ++row)
+  {
+    if (f.read((uint8_t *)rowBuf, TFT_W * 2) != TFT_W * 2) break;
+    tft.pushColors(rowBuf, TFT_W);
+    if ((row & 31) == 31) yield();
+  }
+  tft.endWrite();
+  f.close();
 }
 
 static void playStartupWav()
@@ -1510,7 +2810,7 @@ static void playStartupWav()
     f.close(); return;
   }
 
-  drawStatus("Audio test...", "voicemorpher.wav");
+  showSplash();
   Serial.println("Playing startup WAV...");
 
   float savedGain = playback_gain;
@@ -1549,6 +2849,7 @@ static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
       chunk[i] = applyPlaybackGain(src[offset + i]);
     }
 
+    mixMoodInto(chunk, chunkCount);
     size_t bytes_written = 0;
     esp_err_t ret = i2s_write(I2S_TX_PORT, chunk, chunkCount * sizeof(int16_t), &bytes_written, portMAX_DELAY);
     if (ret != ESP_OK)
@@ -1564,6 +2865,7 @@ static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
       return;
     }
     offset += written_samples;
+    if (g_waveform_visible) drawWaveformPlayhead((int)offset);
     if (isJoystickButtonPressed()) return;
   }
 }
@@ -1571,19 +2873,21 @@ static void writeSamplesWithGain(const int16_t *src, size_t sampleCount)
 void cleanRecording()
 {
 #if ENABLE_AUDIO_CLEANING
-  // Simple smoothing filter for recorded data to reduce crackle.
-  int16_t prev = record_buffer[0];
+  // Click/pop detector: replaces only isolated spike samples, leaving normal
+  // audio content (including high frequencies) completely untouched.
+  // A sample is a click when it differs greatly from BOTH neighbors while
+  // the neighbors themselves are relatively close to each other.
+  const int32_t CLICK_THRESHOLD = 2500 * AUDIO_CLEANING_STRENGTH;
   for (int i = 1; i < active_sample_count - 1; ++i)
   {
+    int32_t prev = record_buffer[i - 1];
+    int32_t cur  = record_buffer[i];
     int32_t next = record_buffer[i + 1];
-    int32_t cur = record_buffer[i];
-    int32_t filtered = (prev + cur + next) / 3;
-    if (AUDIO_CLEANING_STRENGTH > 1)
-    {
-      filtered = (filtered + cur) / 2;
-    }
-    prev = record_buffer[i];
-    record_buffer[i] = (int16_t)filtered;
+    int32_t d1 = abs(cur - prev);
+    int32_t d2 = abs(cur - next);
+    int32_t dn = abs(next - prev);
+    if (d1 > CLICK_THRESHOLD && d2 > CLICK_THRESHOLD && dn < d1 / 2 && dn < d2 / 2)
+      record_buffer[i] = (int16_t)((prev + next) / 2);
   }
 #endif
 }
@@ -1672,8 +2976,27 @@ void recordToBuffer()
   size_t sample_offset = 0;
   Serial.printf("Recording %d seconds (%d samples)...\n", active_sample_count / SAMPLE_RATE, active_sample_count);
 
+  const int16_t BX = 8, BY = 46, BW = TFT_W - 16, BH = 28;
+  int totalSecs = active_sample_count / SAMPLE_RATE;
+
   while (sample_offset < active_sample_count)
   {
+    // Refresh display roughly every half-second of audio
+    if (sample_offset % (SAMPLE_RATE / 2) < TEMP_SAMPLES)
+    {
+      tft.fillScreen(C_BG);
+      drawHeader("Recording...");
+      drawProgressBar(BX, BY, BW, BH, (float)sample_offset / active_sample_count);
+      int elapsed = (int)(sample_offset / SAMPLE_RATE);
+      int remaining = totalSecs - elapsed;
+      char timeBuf[32];
+      snprintf(timeBuf, sizeof(timeBuf), "%ds remaining", remaining);
+      tft.setTextColor(TFT_CYAN);
+      tft.setTextSize(2);
+      tft.setCursor(BX, BY + BH + 10);
+      tft.print(timeBuf);
+    }
+
     size_t samples_to_read = min(TEMP_SAMPLES, (size_t)(active_sample_count - sample_offset));
     size_t bytes_to_read = samples_to_read * sizeof(int16_t);
     size_t bytes_read = 0;
@@ -1690,9 +3013,29 @@ void recordToBuffer()
     yield();
   }
 
+  // Draw final 100% frame so it doesn't linger at "1s remaining"
+  tft.fillScreen(C_BG);
+  drawHeader("Recording...");
+  drawProgressBar(BX, BY, BW, BH, 1.0f);
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(BX, BY + BH + 10);
+  tft.print("0s remaining");
+
   Serial.printf("Recording complete. First 8 samples: %d %d %d %d %d %d %d %d\n",
     record_buffer[0], record_buffer[1], record_buffer[2], record_buffer[3],
     record_buffer[4], record_buffer[5], record_buffer[6], record_buffer[7]);
+  // Apply mic gain before cleaning/normalising so clipping headroom is set correctly.
+  if (g_mic_gain != 1.0f)
+  {
+    for (int i = 0; i < active_sample_count; ++i)
+    {
+      int32_t s = (int32_t)(record_buffer[i] * g_mic_gain);
+      if (s > INT16_MAX) s = INT16_MAX;
+      if (s < INT16_MIN) s = INT16_MIN;
+      record_buffer[i] = (int16_t)s;
+    }
+  }
   cleanRecording();
   normalizeRecording();
   g_has_recording = true;
@@ -1701,6 +3044,7 @@ void recordToBuffer()
 
 void playBufferSimple()
 {
+  openMoodPlayback();
   // Check if buffer has any non-zero samples
   int32_t sum = 0;
   int nonzero_count = 0;
@@ -1720,12 +3064,14 @@ void playBufferSimple()
   Serial.printf("Playing buffer: %d non-zero samples, avg magnitude: %d\n", nonzero_count, avg_magnitude);
   
   writeSamplesWithGain(record_buffer, active_sample_count);
+  closeMoodPlayback();
   stopTxAndFlush();
   Serial.printf("Playback complete: %u bytes written\n", (unsigned int)(active_sample_count * sizeof(int16_t)));
 }
 
 void playReverse()
 {
+  openMoodPlayback();
   // send samples in reverse order
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
@@ -1738,16 +3084,20 @@ void playReverse()
     {
       chunk[i] = applyPlaybackGain(record_buffer[idx - i]);
     }
+    mixMoodInto(chunk, count);
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, count * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+    if (g_waveform_visible) drawWaveformPlayhead(idx);
     if (isJoystickButtonPressed()) break;
     idx -= count;
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playResample(float speed)
 {
+  openMoodPlayback();
   // speed >1.0 = faster (pitch up), <1.0 = slower (pitch down)
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
@@ -1760,9 +3110,11 @@ void playResample(float speed)
     chunk[chunkIndex++] = applyPlaybackGain(record_buffer[read_idx]);
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead((int)idx);
       if (isJoystickButtonPressed()) break;
     }
     idx += speed;
@@ -1770,14 +3122,17 @@ void playResample(float speed)
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playEcho(float delaySec, float decay)
 {
+  openMoodPlayback();
   int delaySamples = int(delaySec * SAMPLE_RATE);
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
@@ -1796,23 +3151,28 @@ void playEcho(float delaySec, float decay)
 
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playRingMod(float freq)
 {
+  openMoodPlayback();
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
   int chunkIndex = 0;
@@ -1828,23 +3188,28 @@ void playRingMod(float freq)
 
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bytes_written = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bytes_written, portMAX_DELAY);
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playStutter(float chunkSec, int repeats)
 {
+  openMoodPlayback();
   int chunkSamples = (int)(chunkSec * SAMPLE_RATE);
   if (chunkSamples < 1) chunkSamples = 1;
 
@@ -1865,19 +3230,23 @@ void playStutter(float chunkSec, int repeats)
         if (count > (int)WRITE_SIZE) count = (int)WRITE_SIZE;
         for (int i = 0; i < count; ++i)
           buf[i] = applyPlaybackGain(record_buffer[writePos + i]);
+        mixMoodInto(buf, count);
         size_t bytesWritten = 0;
         i2s_write(I2S_TX_PORT, buf, count * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
         writePos += count;
       }
     }
 
+    if (g_waveform_visible) drawWaveformPlayhead(pos);
     if (isJoystickButtonPressed()) break;
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playTremolo(float rate)
 {
+  openMoodPlayback();
   // Amplitude modulation: volume oscillates at the given rate in Hz.
   const float DEPTH = 0.85f;
   const int CHUNK_SAMPLES = 256;
@@ -1895,23 +3264,28 @@ void playTremolo(float rate)
 
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playHaunted(float delaySec, float decay)
 {
+  openMoodPlayback();
   // Play the recording backwards and mix in an echo that trails behind each reversed sound.
   // In reversed playback "behind" means a higher index in the original buffer.
   int delaySamples = (int)(delaySec * SAMPLE_RATE);
@@ -1931,23 +3305,28 @@ void playHaunted(float delaySec, float decay)
 
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playAlien(float speed, float ringFreq)
 {
+  openMoodPlayback();
   // Pitch-shifted playback with simultaneous ring modulation.
   // speed > 1.0 raises pitch; ringFreq controls the modulation buzz.
   // Ring mod timing follows output time so the buzz stays steady regardless of pitch.
@@ -1968,9 +3347,11 @@ void playAlien(float speed, float ringFreq)
 
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead((int)idx);
       if (isJoystickButtonPressed()) break;
     }
     idx += speed;
@@ -1979,19 +3360,22 @@ void playAlien(float speed, float ringFreq)
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playMonster(float speed, float delaySec, float decay)
 {
+  openMoodPlayback();
   // Slow pitch-shifted playback with a live echo applied via a small circular delay buffer.
   // Because resampling changes the output length, a fixed-size delay buffer is used
   // rather than reading back into the original record_buffer.
   int delayLen = (int)(delaySec * SAMPLE_RATE) + 1;
-  int16_t *echoBuf = (int16_t *)calloc(delayLen, sizeof(int16_t));
+  int16_t *echoBuf = (int16_t *)heap_caps_calloc(delayLen, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (!echoBuf)
   {
     playResample(speed);
@@ -2018,9 +3402,11 @@ void playMonster(float speed, float delaySec, float decay)
     chunk[chunkIndex++] = applyPlaybackGain((int16_t)out);
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead((int)idx);
       if (isJoystickButtonPressed()) break;
     }
     idx += speed;
@@ -2028,19 +3414,22 @@ void playMonster(float speed, float delaySec, float decay)
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
   free(echoBuf);
+  closeMoodPlayback();
   stopTxAndFlush();
 }
 
 void playChorus(float rate, float depth)
 {
+  openMoodPlayback();
   // LFO sweeps a short delay (10–30 ms) at the given rate in Hz.
   // depth in [0,1] scales the wet/dry mix: 0 = subtle, 1 = full chorus.
   const int CHORUS_LEN = (int)(0.05f * SAMPLE_RATE) + 1;
-  int16_t *chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+  int16_t *chorusBuf = (int16_t *)heap_caps_calloc(CHORUS_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (!chorusBuf)
   {
     playBufferSimple();
@@ -2074,25 +3463,624 @@ void playChorus(float rate, float depth)
 
     if (chunkIndex >= CHUNK_SAMPLES)
     {
+      mixMoodInto(chunk, chunkIndex);
       size_t bw = 0;
       i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
       chunkIndex = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
       if (isJoystickButtonPressed()) break;
     }
   }
 
   if (chunkIndex > 0)
   {
+    mixMoodInto(chunk, chunkIndex);
     size_t bw = 0;
     i2s_write(I2S_TX_PORT, chunk, chunkIndex * sizeof(int16_t), &bw, portMAX_DELAY);
   }
   free(chorusBuf);
+  closeMoodPlayback();
   stopTxAndFlush();
+}
+
+// HP+LP band-pass giving a telephone / tinny quality.
+// hpHz: high-pass cutoff (300–2000 Hz removes lows). LP fixed at 4 kHz to avoid shrillness.
+void playTelephone(float hpHz)
+{
+  openMoodPlayback();
+
+  const float PI2    = 2.0f * 3.14159265f;
+  const float DT     = 1.0f / SAMPLE_RATE;
+  const float hp_tau = 1.0f / (PI2 * hpHz);
+  const float hp_a   = hp_tau / (hp_tau + DT);
+  const float lp_tau = 1.0f / (PI2 * 4000.0f);
+  const float lp_b   = DT   / (lp_tau + DT);
+
+  const int CHUNK = 256;
+  int16_t chunk[CHUNK];
+  int ci = 0;
+  float hp_x1 = 0.0f, hp_y1 = 0.0f, lp_y1 = 0.0f;
+
+  for (int i = 0; i < active_sample_count; ++i)
+  {
+    float x   = (float)record_buffer[i];
+    float yhp = hp_a * (hp_y1 + x - hp_x1);
+    hp_x1 = x; hp_y1 = yhp;
+    float ylp = lp_b * yhp + (1.0f - lp_b) * lp_y1;
+    lp_y1 = ylp;
+
+    int32_t out = (int32_t)ylp;
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+    chunk[ci++] = applyPlaybackGain((int16_t)out);
+
+    if (ci >= CHUNK)
+    {
+      mixMoodInto(chunk, ci);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, ci * sizeof(int16_t), &bw, portMAX_DELAY);
+      ci = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
+      if (isJoystickButtonPressed()) break;
+    }
+  }
+  if (ci > 0)
+  {
+    mixMoodInto(chunk, ci);
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, ci * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  closeMoodPlayback();
+  stopTxAndFlush();
+}
+
+// threshold: max sample amplitude before folding (1000-30000); lower = more harmonic distortion.
+// Output is normalised to full scale so volume stays consistent regardless of threshold.
+void playWavefold(float threshold)
+{
+  openMoodPlayback();
+  const int CHUNK = 256;
+  int16_t chunk[CHUNK];
+  int ci = 0;
+
+  float outGain = (float)INT16_MAX / threshold;
+
+  for (int i = 0; i < active_sample_count; ++i)
+  {
+    float s = (float)record_buffer[i];
+    if (s > threshold)
+      s = threshold - (s - threshold);  // fold above +threshold
+    else if (s < -threshold)
+      s = -threshold - (s + threshold); // fold below -threshold
+
+    int32_t out = (int32_t)(s * outGain);
+    if (out > INT16_MAX) out = INT16_MAX;
+    if (out < INT16_MIN) out = INT16_MIN;
+
+    chunk[ci++] = applyPlaybackGain((int16_t)out);
+
+    if (ci >= CHUNK)
+    {
+      mixMoodInto(chunk, ci);
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, ci * sizeof(int16_t), &bw, portMAX_DELAY);
+      ci = 0;
+      if (g_waveform_visible) drawWaveformPlayhead(i);
+      if (isJoystickButtonPressed()) break;
+    }
+  }
+  if (ci > 0)
+  {
+    mixMoodInto(chunk, ci);
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, chunk, ci * sizeof(int16_t), &bw, portMAX_DELAY);
+  }
+  closeMoodPlayback();
+  stopTxAndFlush();
+}
+
+static void calibrateThereminJoy()
+{
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(8, 8);
+  tft.print("Joy Cal");
+  tft.setTextColor(TFT_CYAN);
+  tft.setCursor(8, 50);
+  tft.print("Calibrate joystick");
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(8, 80);
+  tft.print("Push Y fully up & down");
+  tft.setCursor(8, 105);
+  tft.print("then press button.");
+
+  const int16_t CB_X = 8, CB_Y = 145, CB_W = TFT_W - 16, CB_H = 22;
+  tft.drawRect(CB_X - 1, CB_Y - 1, CB_W + 2, CB_H + 2, tft.color565(40, 50, 100));
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY);
+  tft.setCursor(4, TFT_H - 12);
+  tft.print("Btn: done");
+
+  int joyYMin = 4095, joyYMax = 0, lastBarFill = -1;
+
+  while (!isJoystickButtonPressed())
+  {
+    int y = analogRead(JOY_Y_PIN);
+    if (y < joyYMin) joyYMin = y;
+    if (y > joyYMax) joyYMax = y;
+
+    int sweepPx = (int)((float)(joyYMax - joyYMin) / 4095.0f * CB_W);
+    if (sweepPx != lastBarFill)
+    {
+      lastBarFill = sweepPx;
+      tft.fillRect(CB_X, CB_Y, CB_W, CB_H, tft.color565(10, 12, 30));
+      int startX = (int)((float)joyYMin / 4095.0f * CB_W);
+      tft.fillRect(CB_X + startX, CB_Y, sweepPx, CB_H, TFT_CYAN);
+    }
+    delay(20);
+  }
+  while (isJoystickButtonPressed()) delay(10);
+
+  if (joyYMax <= joyYMin) { joyYMin = 100; joyYMax = 3900; }
+
+  int margin = (joyYMax - joyYMin) / 20;
+  joyYMin = max(0,    joyYMin - margin);
+  joyYMax = min(4095, joyYMax + margin);
+
+  g_prefs.putInt("th_ymin", joyYMin);
+  g_prefs.putInt("th_ymax", joyYMax);
+
+  drawStatus("Joy Cal saved!", "");
+  delay(1000);
+}
+
+// Pre-computed 256-entry sine LUT: sinLUT[i] = round(32767 * sin(2π * i / 256))
+static const int16_t SINE_LUT[256] PROGMEM = {
+      0,   804,  1608,  2410,  3212,  4011,  4808,  5602,
+   6393,  7179,  7962,  8739,  9512, 10278, 11039, 11793,
+  12539, 13279, 14010, 14733, 15446, 16151, 16846, 17530,
+  18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594,
+  23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790,
+  27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956,
+  30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971,
+  32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757,
+  32767, 32757, 32728, 32678, 32609, 32521, 32412, 32285,
+  32137, 31971, 31785, 31580, 31356, 31113, 30852, 30571,
+  30273, 29956, 29621, 29268, 28898, 28510, 28105, 27683,
+  27245, 26790, 26319, 25832, 25329, 24811, 24279, 23731,
+  23170, 22594, 22005, 21403, 20787, 20159, 19519, 18868,
+  18204, 17530, 16846, 16151, 15446, 14733, 14010, 13279,
+  12539, 11793, 11039, 10278,  9512,  8739,  7962,  7179,
+   6393,  5602,  4808,  4011,  3212,  2410,  1608,   804,
+      0,  -804, -1608, -2410, -3212, -4011, -4808, -5602,
+  -6393, -7179, -7962, -8739, -9512,-10278,-11039,-11793,
+ -12539,-13279,-14010,-14733,-15446,-16151,-16846,-17530,
+ -18204,-18868,-19519,-20159,-20787,-21403,-22005,-22594,
+ -23170,-23731,-24279,-24811,-25329,-25832,-26319,-26790,
+ -27245,-27683,-28105,-28510,-28898,-29268,-29621,-29956,
+ -30273,-30571,-30852,-31113,-31356,-31580,-31785,-31971,
+ -32137,-32285,-32412,-32521,-32609,-32678,-32728,-32757,
+ -32767,-32757,-32728,-32678,-32609,-32521,-32412,-32285,
+ -32137,-31971,-31785,-31580,-31356,-31113,-30852,-30571,
+ -30273,-29956,-29621,-29268,-28898,-28510,-28105,-27683,
+ -27245,-26790,-26319,-25832,-25329,-24811,-24279,-23731,
+ -23170,-22594,-22005,-21403,-20787,-20159,-19519,-18868,
+ -18204,-17530,-16846,-16151,-15446,-14733,-14010,-13279,
+ -12539,-11793,-11039,-10278, -9512, -8739, -7962, -7179,
+  -6393, -5602, -4808, -4011, -3212, -2410, -1608,  -804,
+};
+
+static void thereminMode()
+{
+  static const char *noteNames[] = {
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+  };
+
+  // --- Y-axis calibration (only needed for joystick pitch source) ---
+  if (g_th_pitch_src == 0 &&
+      g_prefs.getInt("th_ymax", -1) - g_prefs.getInt("th_ymin", -1) < 500)
+    calibrateThereminJoy();
+
+  int joyYMin = g_prefs.getInt("th_ymin", 100);
+  int joyYMax = g_prefs.getInt("th_ymax", 3900);
+  bool th_quantize = g_prefs.getBool("th_quantize", false);
+
+  i2s_driver_uninstall(I2S_TX_PORT);
+
+  // PCM arrays are DRAM_ATTR — copied from flash into SRAM at boot, so the
+  // synthesis loop reads pure SRAM with no cache stalls or flash bus activity.
+  const int16_t *th_sample = nullptr;
+  int            th_sample_len = 0;
+  if      (g_th_sound == 1) { th_sample = KITTEN_PCM; th_sample_len = KITTEN_LEN; }
+  else if (g_th_sound == 2) { th_sample = BEAVIS_PCM; th_sample_len = BEAVIS_LEN; }
+  else if (g_th_sound == 3) { th_sample = NANA_PCM;   th_sample_len = NANA_LEN;   }
+  else if (g_th_sound == 4) { th_sample = STRING_PCM; th_sample_len = STRING_LEN; }
+
+  // Reinitialize TX with low-latency DMA: 2×64 = 128 samples ≈ 12ms at 11025 Hz
+  {
+    i2s_config_t cfg = {};
+    cfg.mode                = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+    cfg.sample_rate         = SAMPLE_RATE;
+    cfg.bits_per_sample     = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_16BIT;
+    cfg.channel_format      = I2S_CHANNEL_FMT_ONLY_LEFT;
+    cfg.communication_format= I2S_COMM_FORMAT_STAND_I2S;
+    cfg.dma_buf_count       = 4;    // 4×128 = 512 samples ≈ 46ms headroom
+    cfg.dma_buf_len         = 128;  // enough margin for TFT SPI writes (~15ms each)
+    cfg.use_apll            = false;
+    i2s_driver_install(I2S_TX_PORT, &cfg, 0, NULL);
+    i2s_pin_config_t pins = {};
+    pins.bck_io_num     = I2S_TX_BCK;
+    pins.ws_io_num      = I2S_TX_WS;
+    pins.data_out_num   = I2S_TX_SD;
+    pins.data_in_num    = I2S_PIN_NO_CHANGE;
+    i2s_set_pin(I2S_TX_PORT, &pins);
+  }
+  Serial.println("TH: I2S installed"); Serial.flush();
+
+  // Draw UI
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(8, 8);
+  tft.print("Theremin");
+  if (g_th_sound > 0) {
+    tft.setTextSize(1);
+    tft.setTextColor(tft.color565(140, 200, 255));
+    tft.setCursor(10, 26);
+    tft.print(TH_SOUND_NAMES[g_th_sound]);
+  }
+  // Pitch bar frame
+  const int16_t BAR_X = 8, BAR_Y = 148, BAR_W = TFT_W - 16, BAR_H = 22;
+  tft.drawRect(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2, tft.color565(40, 50, 100));
+  // Bar labels
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY);
+  tft.setCursor(BAR_X, BAR_Y + BAR_H + 4);
+  tft.print("C3");
+  tft.setCursor(BAR_X + BAR_W - 12, BAR_Y + BAR_H + 4);
+  tft.print("C6");
+  // Volume bar frame
+  const int16_t VBAR_X = 8, VBAR_Y = 192, VBAR_W = TFT_W - 16, VBAR_H = 14;
+  tft.setCursor(BAR_X, VBAR_Y - 12);
+  tft.print("Vol");
+  tft.drawRect(VBAR_X - 1, VBAR_Y - 1, VBAR_W + 2, VBAR_H + 2, tft.color565(40, 50, 100));
+  // Mode badge (FREE / NOTES) in header, right side
+  auto drawThereminBadge = [&](bool quantize) {
+    const char *label = quantize ? "NOTES" : " FREE";
+    uint16_t bg = quantize ? tft.color565(160, 120, 0) : tft.color565(0, 130, 60);
+    tft.fillRoundRect(TFT_W - 72, 6, 64, 22, 4, bg);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(TFT_W - 68, 10);
+    tft.print(label);
+  };
+  drawThereminBadge(th_quantize);
+
+  // Hint (two lines)
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY);
+  tft.setCursor(4, TFT_H - 22);
+  tft.print(g_th_pitch_src == 1 ? "Sonar: pitch  X: vol" : "Y: pitch   X: vol");
+  tft.setCursor(4, TFT_H - 12);
+  tft.print("Btn: free/notes  Hold: exit");
+
+  float phase    = 0.0f;
+  float readPos  = 0.0f;
+  char lastNote[8]  = "";
+  char lastFreq[16] = "";
+  int  lastPitchBar = -1;
+  int  lastVolBar   = -1;
+  bool lastQuantize = th_quantize;
+  float lastSonarCm = (TH_SONAR_MIN_CM + TH_SONAR_MAX_CM) * 0.5f;
+  int   sonarTick   = 0;
+  float stepVol     = 0.5f;       // sonar mode: held volume level (0–1, 8 steps)
+  unsigned long lastVolMoveMs = 0;
+  unsigned long lastDisplayMs = 0;
+
+  const int CHUNK = 64;
+  int16_t buf[CHUNK];
+
+  while (true)
+  {
+    int rawX = analogRead(JOY_X_PIN);
+    if (rawX < 0) rawX = 0; if (rawX > 4095) rawX = 4095;
+
+    float pitchT;
+    if (g_th_pitch_src == 1) {
+      // HC-SR04: sample every 4th chunk to avoid blocking the DMA too often
+      if ((sonarTick & 3) == 0) {
+        float d = readHCSR04cm();
+        if (d > 0.0f) lastSonarCm = d;
+      }
+      sonarTick++;
+      float sc = lastSonarCm < TH_SONAR_MIN_CM ? TH_SONAR_MIN_CM
+               : (lastSonarCm > TH_SONAR_MAX_CM ? TH_SONAR_MAX_CM : lastSonarCm);
+      pitchT = 1.0f - (sc - TH_SONAR_MIN_CM) / (TH_SONAR_MAX_CM - TH_SONAR_MIN_CM);
+    } else {
+      int rawY = analogRead(JOY_Y_PIN);
+      if (rawY < 0) rawY = 0; if (rawY > 4095) rawY = 4095;
+      int clampedY = rawY < joyYMin ? joyYMin : (rawY > joyYMax ? joyYMax : rawY);
+      pitchT = 1.0f - (float)(clampedY - joyYMin) / (float)(joyYMax - joyYMin);
+    }
+    float freq = 130.813f * powf(2.0f, pitchT * 3.0f);  // C3–C6, 3 octaves
+    if (th_quantize) {
+      int midi = (int)roundf(69.0f + 12.0f * log2f(freq / 440.0f));
+      freq = 440.0f * powf(2.0f, (midi - 69) / 12.0f);
+    }
+
+    // X → amplitude
+    float amp;
+    if (g_th_pitch_src == 1) {
+      // Sonar mode: joystick steps volume up/down and holds position
+      int xDir = readJoystickAxis(JOY_X_PIN);
+      unsigned long vm = millis();
+      if (xDir != 0 && vm - lastVolMoveMs >= 300) {
+        stepVol += xDir * (1.0f / 8.0f);
+        if (stepVol < 0.0f) stepVol = 0.0f;
+        if (stepVol > 1.0f) stepVol = 1.0f;
+        lastVolMoveMs = vm;
+      }
+      amp = stepVol;
+    } else {
+      float v = (float)rawX / 4095.0f;
+      amp = v * v;  // squared for natural feel with joystick
+    }
+
+    // Generate chunk: sine LUT or variable-rate sample resampling
+    if (th_sample == nullptr) {
+      for (int i = 0; i < CHUNK; i++) {
+        int   idx  = (int)phase & 0xFF;
+        float frac = phase - (int)phase;
+        float s    = (1.0f - frac) * SINE_LUT[idx] + frac * SINE_LUT[(idx + 1) & 0xFF];
+        phase += 256.0f * freq / (float)SAMPLE_RATE;
+        if (phase >= 256.0f) phase -= 256.0f;
+        int32_t out = (int32_t)(s * amp * 0.85f);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        buf[i] = (int16_t)out;
+      }
+    } else {
+      float len_f      = (float)th_sample_len;
+      float pitch_rate = freq / 440.0f;
+      for (int i = 0; i < CHUNK; i++) {
+        int   idx0 = (int)readPos;
+        if (idx0 < 0) idx0 = 0;
+        if (idx0 >= th_sample_len) idx0 = th_sample_len - 1;
+        float frac = readPos - idx0;
+        int   idx1 = (idx0 + 1 < th_sample_len) ? idx0 + 1 : 0;
+        float s    = (1.0f - frac) * th_sample[idx0] + frac * th_sample[idx1];
+        readPos = fmodf(readPos + pitch_rate, len_f);
+        int32_t out = (int32_t)(s * amp * 0.85f);
+        if (out > INT16_MAX) out = INT16_MAX;
+        if (out < INT16_MIN) out = INT16_MIN;
+        buf[i] = (int16_t)out;
+      }
+    }
+    size_t bw = 0;
+    i2s_write(I2S_TX_PORT, buf, CHUNK * sizeof(int16_t), &bw, portMAX_DELAY);
+
+    // --- Display updates throttled to ~120ms so TFT SPI never starves the DMA ---
+    unsigned long now = millis();
+    if (now - lastDisplayMs >= 120)
+    {
+      lastDisplayMs = now;
+
+      // Note name
+      int midiNote = (int)roundf(69.0f + 12.0f * log2f(freq / 440.0f));
+      char noteBuf[8];
+      snprintf(noteBuf, sizeof(noteBuf), "%s%d", noteNames[((midiNote % 12) + 12) % 12], midiNote / 12 - 1);
+      if (strcmp(noteBuf, lastNote) != 0)
+      {
+        strcpy(lastNote, noteBuf);
+        tft.fillRect(0, 44, 160, 48, C_BG);
+        tft.setTextColor(TFT_CYAN);
+        tft.setTextSize(4);
+        tft.setCursor(8, 48);
+        tft.print(noteBuf);
+      }
+
+      // Frequency
+      char freqBuf[16];
+      snprintf(freqBuf, sizeof(freqBuf), "%.1f Hz", freq);
+      if (strcmp(freqBuf, lastFreq) != 0)
+      {
+        strcpy(lastFreq, freqBuf);
+        tft.fillRect(0, 100, TFT_W, 20, C_BG);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.setCursor(8, 102);
+        tft.print(freqBuf);
+      }
+
+      // Pitch position bar
+      int pitchFill = (int)(pitchT * BAR_W);
+      if (pitchFill != lastPitchBar)
+      {
+        lastPitchBar = pitchFill;
+        tft.fillRect(BAR_X, BAR_Y, BAR_W, BAR_H, tft.color565(10, 12, 30));
+        if (pitchFill > 0)
+          tft.fillRect(BAR_X, BAR_Y, pitchFill, BAR_H, TFT_CYAN);
+      }
+
+      // Volume bar
+      int volFill = (int)((g_th_pitch_src == 1 ? stepVol : amp) * VBAR_W);
+      if (volFill != lastVolBar)
+      {
+        lastVolBar = volFill;
+        tft.fillRect(VBAR_X, VBAR_Y, VBAR_W, VBAR_H, tft.color565(10, 12, 30));
+        if (volFill > 0)
+          tft.fillRect(VBAR_X, VBAR_Y, volFill, VBAR_H, tft.color565(80, 200, 80));
+      }
+
+      // Mode badge
+      if (th_quantize != lastQuantize)
+      {
+        lastQuantize = th_quantize;
+        drawThereminBadge(th_quantize);
+      }
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      unsigned long pressStart = millis();
+      while (isJoystickButtonPressed()) delay(10);
+      if (millis() - pressStart >= 500) {
+        break;  // long press = exit
+      } else {
+        th_quantize = !th_quantize;
+        g_prefs.putBool("th_quantize", th_quantize);
+        lastQuantize = !th_quantize;  // force badge redraw next display tick
+      }
+    }
+  }
+
+  // Fade to silence
+  memset(buf, 0, sizeof(buf));
+  for (int i = 0; i < 3; i++) { size_t bw = 0; i2s_write(I2S_TX_PORT, buf, CHUNK * sizeof(int16_t), &bw, portMAX_DELAY); }
+
+  // Restore TX to normal DMA config (8×256)
+  i2s_driver_uninstall(I2S_TX_PORT);
+  {
+    i2s_config_t cfg = {};
+    cfg.mode                = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+    cfg.sample_rate         = SAMPLE_RATE;
+    cfg.bits_per_sample     = (i2s_bits_per_sample_t)I2S_BITS_PER_SAMPLE_16BIT;
+    cfg.channel_format      = I2S_CHANNEL_FMT_ONLY_LEFT;
+    cfg.communication_format= I2S_COMM_FORMAT_STAND_I2S;
+    cfg.dma_buf_count       = 8;
+    cfg.dma_buf_len         = 256;
+    cfg.use_apll            = false;
+    i2s_driver_install(I2S_TX_PORT, &cfg, 0, NULL);
+    i2s_pin_config_t pins = {};
+    pins.bck_io_num     = I2S_TX_BCK;
+    pins.ws_io_num      = I2S_TX_WS;
+    pins.data_out_num   = I2S_TX_SD;
+    pins.data_in_num    = I2S_PIN_NO_CHANGE;
+    i2s_set_pin(I2S_TX_PORT, &pins);
+  }
+  i2s_zero_dma_buffer(I2S_TX_PORT);
+}
+
+static void runThereminMenu()
+{
+  static const char  *items[]  = { "Play", "Sound", "Pitch" };
+  static const uint8_t *icons[] = { ICON_THEREMIN, ICON_PLAY, ICON_JOYCAL };
+  const int COUNT = 3;
+  int sel = 0;
+  int prevSel = -1;
+  unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < COUNT; ++i)
+      {
+        int16_t y = i * ITEM_H;
+        if (i == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, TFT_WHITE);
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, 0xDEFB);
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.setCursor(28, y + 5);
+        tft.print(items[i]);
+      }
+
+      char hint1[32], hint2[32];
+      snprintf(hint1, sizeof(hint1), "Sound: %s", TH_SOUND_NAMES[g_th_sound]);
+      snprintf(hint2, sizeof(hint2), "Pitch: %s", TH_PITCH_SRC_NAMES[g_th_pitch_src]);
+      drawHints(hint1, hint2);
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return;
+      sel = (sel + (y < 0 ? -1 : 1) + COUNT) % COUNT;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+
+      if (sel == 0)  // Play
+      {
+        thereminMode();
+        prevSel = -1;
+      }
+      else if (sel == 1)  // Sound picker
+      {
+        static const uint8_t *soundIcons[] = { ICON_THEREMIN, ICON_PLAY, ICON_PLAY, ICON_PLAY, ICON_PLAY };
+        int newSound = showIconList(TH_SOUND_NAMES, soundIcons, TH_SOUND_COUNT, g_th_sound);
+        if (newSound >= 0 && newSound != g_th_sound)
+        {
+          g_th_sound = newSound;
+          g_prefs.putInt("th_sound", g_th_sound);
+        }
+        prevSel = -1;
+      }
+      else  // Pitch source picker
+      {
+        static const uint8_t *pitchIcons[] = { ICON_JOYCAL, ICON_THEREMIN };
+        int newSrc = showIconList(TH_PITCH_SRC_NAMES, pitchIcons, TH_PITCH_SRC_COUNT, g_th_pitch_src);
+        if (newSrc >= 0 && newSrc != g_th_pitch_src)
+        {
+          g_th_pitch_src = newSrc;
+          g_prefs.putInt("th_pitch_src", g_th_pitch_src);
+        }
+        prevSel = -1;
+      }
+    }
+  }
 }
 
 void passthroughWithEffect(int fx)
 {
-  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up
+  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up 8=pitch dn
+  static const char *fxNames[] = {
+    "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus",
+    "Distort", "Telephone", "Pitch Up", "Pitch Dn"
+  };
+  const char *fxLabel = (fx >= 0 && fx <= 8) ? fxNames[fx] : "Live FX";
+
+  // Draw oscilloscope screen
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(8, 8);
+  char hdr[32];
+  snprintf(hdr, sizeof(hdr), "Live: %s", fxLabel);
+  tft.print(hdr);
+  tft.drawRect(WF_X, WF_Y, WF_W, WF_H, tft.color565(40, 50, 100));
+  tft.drawFastHLine(WF_X + 1, WF_CY, WF_W - 2, tft.color565(20, 30, 60));
+  int oscCol = 0;
+
   const int CHUNK_SAMPLES = 256;
   int16_t chunk[CHUNK_SAMPLES];
 
@@ -2102,7 +4090,7 @@ void passthroughWithEffect(int fx)
   int echoWr = 0;
   if (fx == 1)
   {
-    echoBuf = (int16_t *)calloc(ECHO_LEN, sizeof(int16_t));
+    echoBuf = (int16_t *)heap_caps_calloc(ECHO_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!echoBuf) fx = 0;
   }
 
@@ -2113,7 +4101,7 @@ void passthroughWithEffect(int fx)
   float chorusPhase = 0.0f;
   if (fx == 4)
   {
-    chorusBuf = (int16_t *)calloc(CHORUS_LEN, sizeof(int16_t));
+    chorusBuf = (int16_t *)heap_caps_calloc(CHORUS_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!chorusBuf) fx = 0;
   }
 
@@ -2139,12 +4127,16 @@ void passthroughWithEffect(int fx)
   int      pitchFade  = 0;
   if (fx == 7 || fx == 8)
   {
-    pitchRing = (int16_t *)calloc(PITCH_BUF, sizeof(int16_t));
+    pitchRing = (int16_t *)heap_caps_calloc(PITCH_BUF, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!pitchRing) fx = 0;
   }
 
-  // Noise gate envelope follower
+  // Noise gate envelope follower + hold timer
   float gateEnv = 0.0f;
+  unsigned long gateHoldUntilMs = 0;
+
+  // Frequency-shift phase (7 Hz ring-mod at 25% depth — de-coherences feedback resonance)
+  float freqShiftPhase = 0.0f;
 
   // Phase accumulators
   float ringPhase = 0.0f;
@@ -2158,6 +4150,19 @@ void passthroughWithEffect(int fx)
     size_t bytes_read = 0;
     i2s_read(I2S_RX_PORT, chunk, CHUNK_SAMPLES * sizeof(int16_t), &bytes_read, portMAX_DELAY);
     size_t n = bytes_read / sizeof(int16_t);
+
+    // Gate on RAW mic input before any effect amplifies the signal.
+    // This means feedback arriving at the mic (inherently quiet) is gated
+    // even when distortion would otherwise boost it past any reasonable threshold.
+    {
+      float rawPeak = 0.0f;
+      for (size_t i = 0; i < n; ++i)
+      {
+        float a = fabsf((float)chunk[i]);
+        if (a > rawPeak) rawPeak = a;
+      }
+      gateEnv += (rawPeak > gateEnv ? 0.8f : 0.05f) * (rawPeak - gateEnv);
+    }
 
     for (size_t i = 0; i < n; ++i)
     {
@@ -2326,29 +4331,68 @@ void passthroughWithEffect(int fx)
         s = out;
       }
 
-      int32_t gained = (int32_t)((float)s * playback_gain);
+      // Frequency shift: 7 Hz ring-mod at 25% depth (amplitude 0.75-1.0).
+      // Continuously de-coherences feedback resonance without audible tremolo.
+      float shift = 0.75f + 0.25f * cosf(2.0f * 3.14159265f * freqShiftPhase);
+      freqShiftPhase += 7.0f / SAMPLE_RATE;
+      if (freqShiftPhase >= 1.0f) freqShiftPhase -= 1.0f;
+
+      int32_t gained = (int32_t)((float)s * g_live_gain * shift);
       if (gained > INT16_MAX) gained = INT16_MAX;
       if (gained < INT16_MIN) gained = INT16_MIN;
       chunk[i] = (int16_t)gained;
     }
 
-    // Noise gate: measure input peak, update smoothed envelope, silence output if below threshold
-    float peak = 0.0f;
-    for (size_t i = 0; i < n; ++i)
-    {
-      float a = fabsf((float)chunk[i]);
-      if (a > peak) peak = a;
-    }
-    gateEnv += (peak > gateEnv ? 0.8f : 0.05f) * (peak - gateEnv);
-    if (gateEnv < PASSTHROUGH_GATE_THRESHOLD)
+    // Gate with hold timer: once closed, stay closed for 200 ms so feedback
+    // rings have time to fully decay before audio opens again.
+    if (gateEnv < g_gate_threshold)
+      gateHoldUntilMs = millis() + 200;
+    if (millis() < gateHoldUntilMs)
       memset(chunk, 0, n * sizeof(int16_t));
 
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, bytes_read, &bytes_written, portMAX_DELAY);
 
-    if (isJoystickButtonPressed() || Serial.available()) break;
+    // Oscilloscope: draw 8 columns per chunk (32 samples each → ~0.9s full sweep)
+    {
+      const int innerW = WF_W - 2;
+      const int SUBCOLS = 8;
+      const int SUB = CHUNK_SAMPLES / SUBCOLS;
+      const uint16_t wfColor  = tft.color565(0, 180, 220);
+      const uint16_t curColor = tft.color565(50, 50, 90);
+      const uint16_t ctrColor = tft.color565(20, 30, 60);
+      for (int c = 0; c < SUBCOLS; ++c)
+      {
+        int subEnd = min((int)n, (c + 1) * SUB);
+        int16_t pk = 0;
+        for (int s = c * SUB; s < subEnd; ++s)
+        {
+          int16_t a = (int16_t)abs(chunk[s]);
+          if (a > pk) pk = a;
+        }
+        int x = WF_X + 1 + oscCol;
+        tft.drawFastVLine(x, WF_Y + 1, WF_H - 2, C_BG);
+        tft.drawPixel(x, WF_CY, ctrColor);
+        int amp = (int)pk * (WF_H / 2 - 2) / 8192;
+        if (amp > WF_H / 2 - 2) amp = WF_H / 2 - 2;
+        if (amp > 0)
+          tft.drawFastVLine(x, WF_CY - amp, amp * 2 + 1, wfColor);
+        oscCol = (oscCol + 1) % innerW;
+        tft.drawFastVLine(WF_X + 1 + oscCol, WF_Y + 1, WF_H - 2, curColor);
+      }
+    }
+
+    if (isJoystickButtonPressed() || Serial.available())
+    {
+      // Silence the DMA buffer immediately so feedback dies at the button press.
+      memset(chunk, 0, sizeof(chunk));
+      size_t bw = 0;
+      i2s_write(I2S_TX_PORT, chunk, bytes_read, &bw, portMAX_DELAY);
+      break;
+    }
   }
 
+  stopTxAndFlush();  // stop TX DMA, zero buffer, restart clean
   if (echoBuf)   free(echoBuf);
   if (chorusBuf) free(chorusBuf);
   if (pitchRing) free(pitchRing);
@@ -2407,10 +4451,18 @@ void setup()
   digitalWrite(AMP_SD, HIGH);
   Serial.printf("✓ AMP_SD enabled on GPIO%d\n", AMP_SD);
 
-  Wire.begin(DISPLAY_SDA, DISPLAY_SCL);
-  u8g2.begin();
+  tft.init();
+  tft.setRotation(3);  // landscape (rotated 180° from portrait)
+  tft.fillScreen(C_BG);
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+  Serial.println("✓ ST7789V TFT initialized (240x320)");
+
   pinMode(JOY_BTN_PIN, INPUT_PULLUP);
   pinMode(JOY_X_PIN, INPUT);
+  pinMode(HC_SR04_TRIG_PIN, OUTPUT);
+  digitalWrite(HC_SR04_TRIG_PIN, LOW);
+  pinMode(HC_SR04_ECHO_PIN, INPUT);
 
   g_prefs.begin("voicemorph", false);
   float savedGain = g_prefs.getFloat("vol_gain", DEFAULT_PLAYBACK_GAIN);
@@ -2419,6 +4471,31 @@ void setup()
   if (s_volumeLevel < 0.0f) s_volumeLevel = 0.0f;
   if (s_volumeLevel > 1.0f) s_volumeLevel = 1.0f;
   Serial.printf("✓ Volume loaded: %.2fx\n", savedGain);
+  g_gate_threshold = g_prefs.getFloat("gate_thresh", PASSTHROUGH_GATE_THRESHOLD);
+  s_gateLevel      = g_gate_threshold / 5000.0f;
+  Serial.printf("✓ Gate threshold loaded: %.0f\n", g_gate_threshold);
+  g_live_gain     = g_prefs.getFloat("live_gain", 2.5f);
+  s_liveGainLevel = (g_live_gain - 0.5f) / 5.5f;
+  Serial.printf("✓ Live gain loaded: %.2fx\n", g_live_gain);
+  g_mic_gain      = g_prefs.getFloat("mic_gain", 1.0f);
+  s_micGainLevel  = (g_mic_gain - 0.1f) / 1.9f;
+  if (s_micGainLevel < 0.0f) s_micGainLevel = 0.0f;
+  if (s_micGainLevel > 1.0f) s_micGainLevel = 1.0f;
+  Serial.printf("✓ Mic gain loaded: %.2fx\n", g_mic_gain);
+  g_th_sound     = g_prefs.getInt("th_sound", 0);
+  if (g_th_sound < 0 || g_th_sound >= TH_SOUND_COUNT) g_th_sound = 0;
+  g_th_pitch_src = g_prefs.getInt("th_pitch_src", 0);
+  if (g_th_pitch_src < 0 || g_th_pitch_src >= TH_PITCH_SRC_COUNT) g_th_pitch_src = 0;
+  g_mood      = g_prefs.getInt("mood", 0);
+  g_mood_gain = g_prefs.getFloat("mood_vol", MOOD_MUSIC_GAIN);
+  s_moodVolLevel = g_mood_gain / 0.5f;
+  if (s_moodVolLevel > 1.0f) s_moodVolLevel = 1.0f;
+  Serial.printf("✓ Mood loaded: %d (%s), gain=%.2f\n", g_mood, MOOD_NAMES[g_mood], g_mood_gain);
+
+  LittleFS.begin(true);
+  if (loadRecordingAuto())
+    Serial.printf("✓ Auto-loaded last recording: %ds\n", active_sample_count / SAMPLE_RATE);
+  loadMoodTrack(g_mood);
 
   initI2S();
 #if PLAY_STARTUP_WAV
