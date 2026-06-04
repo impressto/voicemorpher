@@ -52,3 +52,12 @@
 #ifndef AUDIO_CLEANING_STRENGTH
 #define AUDIO_CLEANING_STRENGTH 1
 #endif
+
+// HC-SR04 sonar pitch source range (cm). Hand closest = highest pitch.
+// Clamp to [TH_SONAR_MIN_CM, TH_SONAR_MAX_CM] before mapping to pitchT.
+#ifndef TH_SONAR_MIN_CM
+#define TH_SONAR_MIN_CM 5.0f
+#endif
+#ifndef TH_SONAR_MAX_CM
+#define TH_SONAR_MAX_CM 30.0f
+#endif

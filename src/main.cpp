@@ -9,6 +9,7 @@ using namespace fs;
 #include "kitten_pcm.h"
 #include "beavis_pcm.h"
 #include "nana_pcm.h"
+#include "string_pcm.h"
 
 static Preferences g_prefs;
 
@@ -43,6 +44,9 @@ static Preferences g_prefs;
 #define JOY_BTN_PIN 35
 #define JOY_LOW_THRESHOLD 1200
 #define JOY_HIGH_THRESHOLD 2800
+
+#define HC_SR04_TRIG_PIN 15
+#define HC_SR04_ECHO_PIN 16
 
 // Audio parameters
 const int BITS_PER_SAMPLE = 16;
@@ -223,6 +227,20 @@ static float readJoystickXIntensity()
 static bool isJoystickButtonPressed()
 {
   return digitalRead(JOY_BTN_PIN) == LOW;
+}
+
+// Returns distance in cm, or -1.0 on timeout/no echo.
+// Max range is ~60 cm (3480 µs timeout). Safe to call in the I2S loop.
+static float readHCSR04cm()
+{
+  digitalWrite(HC_SR04_TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(HC_SR04_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(HC_SR04_TRIG_PIN, LOW);
+  long dur = pulseIn(HC_SR04_ECHO_PIN, HIGH, 10000); // 10 ms → ~160 cm; HC-SR04 needs 200-600 µs overhead before ECHO rises
+  if (dur == 0) return -1.0f;
+  return dur / 58.0f;
 }
 
 void handleJoystickMenu()
@@ -653,9 +671,12 @@ static float s_volumeLevel   = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
 static int   g_long_rec_secs = 60;
 
 // Theremin sound source
-static const char *TH_SOUND_NAMES[] = { "Sine", "Kitten", "Beavis", "Nana" };
-static const char *TH_SOUND_PATHS[] = { nullptr, "/kitten.wav", "/rizz.wav", "/nana.wav" };
-static const int   TH_SOUND_COUNT   = 4;
+static const char *TH_SOUND_NAMES[] = { "Sine", "Kitten", "Beavis", "Nana", "String" };
+static const char *TH_PITCH_SRC_NAMES[] = { "Joystick", "Sonar" };
+static const int   TH_PITCH_SRC_COUNT   = 2;
+static int         g_th_pitch_src       = 0;  // 0=joystick Y, 1=HC-SR04
+static const char *TH_SOUND_PATHS[] = { nullptr, "/kitten.wav", "/rizz.wav", "/nana.wav", nullptr };
+static const int   TH_SOUND_COUNT   = 5;
 static int         g_th_sound       = 0;  // 0=Sine 1=Kitten 2=Rizz
 
 // Mood background music
@@ -3658,8 +3679,9 @@ static void thereminMode()
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
   };
 
-  // --- Y-axis calibration (load from NVS; run calibration screen on first use) ---
-  if (g_prefs.getInt("th_ymax", -1) - g_prefs.getInt("th_ymin", -1) < 500)
+  // --- Y-axis calibration (only needed for joystick pitch source) ---
+  if (g_th_pitch_src == 0 &&
+      g_prefs.getInt("th_ymax", -1) - g_prefs.getInt("th_ymin", -1) < 500)
     calibrateThereminJoy();
 
   int joyYMin = g_prefs.getInt("th_ymin", 100);
@@ -3675,6 +3697,7 @@ static void thereminMode()
   if      (g_th_sound == 1) { th_sample = KITTEN_PCM; th_sample_len = KITTEN_LEN; }
   else if (g_th_sound == 2) { th_sample = BEAVIS_PCM; th_sample_len = BEAVIS_LEN; }
   else if (g_th_sound == 3) { th_sample = NANA_PCM;   th_sample_len = NANA_LEN;   }
+  else if (g_th_sound == 4) { th_sample = STRING_PCM; th_sample_len = STRING_LEN; }
 
   // Reinitialize TX with low-latency DMA: 2×64 = 128 samples ≈ 12ms at 11025 Hz
   {
@@ -3742,7 +3765,7 @@ static void thereminMode()
   tft.setTextSize(1);
   tft.setTextColor(COL_GRAY);
   tft.setCursor(4, TFT_H - 22);
-  tft.print("Y: pitch   X: vol");
+  tft.print(g_th_pitch_src == 1 ? "Sonar: pitch  X: vol" : "Y: pitch   X: vol");
   tft.setCursor(4, TFT_H - 12);
   tft.print("Btn: free/notes  Hold: exit");
 
@@ -3753,6 +3776,8 @@ static void thereminMode()
   int  lastPitchBar = -1;
   int  lastVolBar   = -1;
   bool lastQuantize = th_quantize;
+  float lastSonarCm = (TH_SONAR_MIN_CM + TH_SONAR_MAX_CM) * 0.5f;
+  int   sonarTick   = 0;
   unsigned long lastDisplayMs = 0;
 
   const int CHUNK = 64;
@@ -3760,15 +3785,27 @@ static void thereminMode()
 
   while (true)
   {
-    int rawY = analogRead(JOY_Y_PIN);
     int rawX = analogRead(JOY_X_PIN);
-    if (rawY < 0) rawY = 0; if (rawY > 4095) rawY = 4095;
     if (rawX < 0) rawX = 0; if (rawX > 4095) rawX = 4095;
 
-    // Y → pitch using calibrated range: up = low rawY = high pitch (C2–C7, 5 octaves)
-    int clampedY = rawY < joyYMin ? joyYMin : (rawY > joyYMax ? joyYMax : rawY);
-    float pitchT = 1.0f - (float)(clampedY - joyYMin) / (float)(joyYMax - joyYMin);
-    float freq   = 130.813f * powf(2.0f, pitchT * 3.0f);  // C3–C6, 3 octaves (normal voice range)
+    float pitchT;
+    if (g_th_pitch_src == 1) {
+      // HC-SR04: sample every 4th chunk to avoid blocking the DMA too often
+      if ((sonarTick & 3) == 0) {
+        float d = readHCSR04cm();
+        if (d > 0.0f) lastSonarCm = d;
+      }
+      sonarTick++;
+      float sc = lastSonarCm < TH_SONAR_MIN_CM ? TH_SONAR_MIN_CM
+               : (lastSonarCm > TH_SONAR_MAX_CM ? TH_SONAR_MAX_CM : lastSonarCm);
+      pitchT = 1.0f - (sc - TH_SONAR_MIN_CM) / (TH_SONAR_MAX_CM - TH_SONAR_MIN_CM);
+    } else {
+      int rawY = analogRead(JOY_Y_PIN);
+      if (rawY < 0) rawY = 0; if (rawY > 4095) rawY = 4095;
+      int clampedY = rawY < joyYMin ? joyYMin : (rawY > joyYMax ? joyYMax : rawY);
+      pitchT = 1.0f - (float)(clampedY - joyYMin) / (float)(joyYMax - joyYMin);
+    }
+    float freq = 130.813f * powf(2.0f, pitchT * 3.0f);  // C3–C6, 3 octaves
     if (th_quantize) {
       int midi = (int)roundf(69.0f + 12.0f * log2f(freq / 440.0f));
       freq = 440.0f * powf(2.0f, (midi - 69) / 12.0f);
@@ -3915,9 +3952,9 @@ static void thereminMode()
 
 static void runThereminMenu()
 {
-  static const char  *items[]  = { "Play", "Sound" };
-  static const uint8_t *icons[] = { ICON_THEREMIN, ICON_PLAY };
-  const int COUNT = 2;
+  static const char  *items[]  = { "Play", "Sound", "Pitch" };
+  static const uint8_t *icons[] = { ICON_THEREMIN, ICON_PLAY, ICON_JOYCAL };
+  const int COUNT = 3;
   int sel = 0;
   int prevSel = -1;
   unsigned long lastMoveMs = 0;
@@ -3955,7 +3992,7 @@ static void runThereminMenu()
 
       char hint1[32], hint2[32];
       snprintf(hint1, sizeof(hint1), "Sound: %s", TH_SOUND_NAMES[g_th_sound]);
-      snprintf(hint2, sizeof(hint2), "X: back");
+      snprintf(hint2, sizeof(hint2), "Pitch: %s", TH_PITCH_SRC_NAMES[g_th_pitch_src]);
       drawHints(hint1, hint2);
     }
 
@@ -3979,14 +4016,25 @@ static void runThereminMenu()
         thereminMode();
         prevSel = -1;
       }
-      else  // Sound picker
+      else if (sel == 1)  // Sound picker
       {
-        static const uint8_t *soundIcons[] = { ICON_THEREMIN, ICON_PLAY, ICON_PLAY, ICON_PLAY };
+        static const uint8_t *soundIcons[] = { ICON_THEREMIN, ICON_PLAY, ICON_PLAY, ICON_PLAY, ICON_PLAY };
         int newSound = showIconList(TH_SOUND_NAMES, soundIcons, TH_SOUND_COUNT, g_th_sound);
         if (newSound >= 0 && newSound != g_th_sound)
         {
           g_th_sound = newSound;
           g_prefs.putInt("th_sound", g_th_sound);
+        }
+        prevSel = -1;
+      }
+      else  // Pitch source picker
+      {
+        static const uint8_t *pitchIcons[] = { ICON_JOYCAL, ICON_THEREMIN };
+        int newSrc = showIconList(TH_PITCH_SRC_NAMES, pitchIcons, TH_PITCH_SRC_COUNT, g_th_pitch_src);
+        if (newSrc >= 0 && newSrc != g_th_pitch_src)
+        {
+          g_th_pitch_src = newSrc;
+          g_prefs.putInt("th_pitch_src", g_th_pitch_src);
         }
         prevSel = -1;
       }
@@ -4396,6 +4444,9 @@ void setup()
 
   pinMode(JOY_BTN_PIN, INPUT_PULLUP);
   pinMode(JOY_X_PIN, INPUT);
+  pinMode(HC_SR04_TRIG_PIN, OUTPUT);
+  digitalWrite(HC_SR04_TRIG_PIN, LOW);
+  pinMode(HC_SR04_ECHO_PIN, INPUT);
 
   g_prefs.begin("voicemorph", false);
   float savedGain = g_prefs.getFloat("vol_gain", DEFAULT_PLAYBACK_GAIN);
@@ -4415,8 +4466,10 @@ void setup()
   if (s_micGainLevel < 0.0f) s_micGainLevel = 0.0f;
   if (s_micGainLevel > 1.0f) s_micGainLevel = 1.0f;
   Serial.printf("✓ Mic gain loaded: %.2fx\n", g_mic_gain);
-  g_th_sound  = g_prefs.getInt("th_sound", 0);
+  g_th_sound     = g_prefs.getInt("th_sound", 0);
   if (g_th_sound < 0 || g_th_sound >= TH_SOUND_COUNT) g_th_sound = 0;
+  g_th_pitch_src = g_prefs.getInt("th_pitch_src", 0);
+  if (g_th_pitch_src < 0 || g_th_pitch_src >= TH_PITCH_SRC_COUNT) g_th_pitch_src = 0;
   g_mood      = g_prefs.getInt("mood", 0);
   g_mood_gain = g_prefs.getFloat("mood_vol", MOOD_MUSIC_GAIN);
   s_moodVolLevel = g_mood_gain / 0.5f;
