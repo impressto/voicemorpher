@@ -281,6 +281,109 @@ static void playStartupWav()
   Serial.println("Startup WAV done.");
 }
 
+// ── Startup diagnostics ──────────────────────────────────────────────────────
+
+static void runStartupDiagnostics()
+{
+  // Each item: state 0=fail(red) 1=warn(yellow) 2=ok(green)
+  struct Diag { const char *label; uint8_t state; char detail[40]; };
+  Diag items[6];
+  int  n = 0;
+
+  // 1. TFT — can't read back (MISO=-1); drawing this screen IS the proof
+  { auto &d = items[n++]; d.label = "TFT Display";
+    d.state = 2;
+    snprintf(d.detail, sizeof(d.detail), "SPI init OK"); }
+
+  // 2. LittleFS — check startup WAV is present
+  { auto &d = items[n++]; d.label = "LittleFS / Flash";
+    bool ok = LittleFS.exists("/voicemorpher.wav");
+    d.state = ok ? 2 : 1;
+    snprintf(d.detail, sizeof(d.detail), ok ? "startup WAV present" : "startup WAV missing"); }
+
+  // 3. Joystick — both axes should be near centre (300–3800)
+  { auto &d = items[n++]; d.label = "Joystick";
+    int x = analogRead(JOY_X_PIN), y = analogRead(JOY_Y_PIN);
+    bool ok = (x > 300 && x < 3800) && (y > 300 && y < 3800);
+    d.state = ok ? 2 : 0;
+    snprintf(d.detail, sizeof(d.detail), "X=%d  Y=%d", x, y); }
+
+  // 4. Microphone — connected INMP441 always has a non-zero noise floor
+  { auto &d = items[n++]; d.label = "Microphone (INMP441)";
+    int16_t buf[256] = {};
+    size_t  br = 0;
+    i2s_read(I2S_RX_PORT, buf, sizeof(buf), &br, pdMS_TO_TICKS(200));
+    int     ns  = (int)(br / 2);
+    int64_t sum = 0;
+    for (int i = 0; i < ns; i++) sum += abs(buf[i]);
+    bool ok = (ns > 0 && sum > 0);
+    d.state = ok ? 2 : 0;
+    if (ok) snprintf(d.detail, sizeof(d.detail), "%d samples, avg amp %d", ns, (int)(sum / ns));
+    else    snprintf(d.detail, sizeof(d.detail), "no signal — check SCK/WS/SD/L-R"); }
+
+  // 5. HC-SR04 — optional, warn rather than fail if absent
+  { auto &d = items[n++]; d.label = "HC-SR04 Sonar";
+    float dist = readHCSR04cm();
+    d.state = (dist > 0) ? 2 : 1;
+    if (dist > 0) snprintf(d.detail, sizeof(d.detail), "%.1f cm detected", dist);
+    else          snprintf(d.detail, sizeof(d.detail), "no echo (optional for theremin)"); }
+
+  // 6. Record buffer — allocated in DRAM before we got here
+  { auto &d = items[n++]; d.label = "Record Buffer";
+    bool ok = (record_buffer != nullptr);
+    d.state = ok ? 2 : 0;
+    int kb = g_max_record_secs * SAMPLE_RATE * 2 / 1024;
+    if (ok) snprintf(d.detail, sizeof(d.detail), "%ds = %d KB internal DRAM", g_max_record_secs, kb);
+    else    snprintf(d.detail, sizeof(d.detail), "ALLOC FAILED"); }
+
+  // ── Serial output ────────────────────────────────────────────────────────
+  Serial.println("\n=== STARTUP DIAGNOSTICS ===");
+  bool anyFail = false;
+  for (int i = 0; i < n; i++) {
+    const char *sym = (items[i].state == 2) ? "[ OK ]" :
+                      (items[i].state == 1) ? "[WARN]" : "[FAIL]";
+    Serial.printf("  %s  %-22s  %s\n", sym, items[i].label, items[i].detail);
+    if (items[i].state == 0) anyFail = true;
+  }
+  Serial.println("===========================\n");
+
+  // ── TFT output ──────────────────────────────────────────────────────────
+  tft.fillScreen(C_BG);
+  fillGradH(0, 0, TFT_W, 36, 0, 55, 140, 0, 15, 65);
+  tft.drawFastHLine(0, 36, TFT_W, TFT_CYAN);
+  tft.setTextColor(TFT_WHITE); tft.setTextSize(2);
+  tft.setCursor(8, 10); tft.print("Diagnostics");
+
+  static const uint16_t STATE_COL[3] = { TFT_RED, TFT_YELLOW, 0x07E0 }; // red/yellow/green
+
+  const int START_Y  = 42;
+  const int ITEM_H_D = 28;
+  for (int i = 0; i < n; i++) {
+    int y = START_Y + i * ITEM_H_D;
+    tft.fillCircle(12, y + 11, 7, STATE_COL[items[i].state]);
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(26, y + 3);  tft.print(items[i].label);
+    tft.setTextColor(tft.color565(150, 160, 180));
+    tft.setCursor(26, y + 14); tft.print(items[i].detail);
+  }
+
+  tft.drawFastHLine(0, TFT_H - 22, TFT_W, tft.color565(25, 30, 65));
+  tft.setTextSize(1);
+  if (anyFail) {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(4, TFT_H - 14);
+    tft.print("Check wiring!  Press button to continue");
+    while (!isJoystickButtonPressed()) delay(50);
+    while ( isJoystickButtonPressed()) delay(50);
+  } else {
+    tft.setTextColor(tft.color565(120, 200, 120));
+    tft.setCursor(4, TFT_H - 14);
+    tft.print("All OK — starting up...");
+    delay(10000);
+  }
+}
+
 // ── setup / loop ─────────────────────────────────────────────────────────────
 
 void setup()
@@ -362,6 +465,7 @@ void setup()
   loadMoodTrack(g_mood);
 
   initI2S();
+  runStartupDiagnostics();
 #if PLAY_STARTUP_WAV
   playStartupWav();
 #endif
