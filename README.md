@@ -53,7 +53,7 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 
 | Amplifier Pin | ESP32-S3 Pin | What it does |
 |---------------|--------------|--------------|
-| BCLK | GPIO 47 | Bit Clock — timing for audio data |
+| BCLK |   GPIO 47 | Bit Clock — timing for audio data |
 | LRCLK | GPIO 45 | Left/Right Clock — channel selector |
 | DIN | GPIO 38 | Data In — audio numbers going to the amp |
 | AMP_SD | GPIO 21 | Enable pin — must be HIGH to turn the amp on |

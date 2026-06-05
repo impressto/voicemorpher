@@ -186,6 +186,11 @@ static void recordToLittleFS(int durationSecs, const char *path)
 // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=pitch up 6=pitch dn 7=stutter 8=monster 9=alien 10=telephone 11=wavefold
 static void playFromLittleFSWithEffect(int fx, const char *path)
 {
+  Serial.printf("[LongPlay] fx=%d path=%s  freeInternal=%u freeTotal=%u\n",
+    fx, path,
+    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+    (unsigned)ESP.getFreeHeap());
+
   openMoodPlayback();
   if (!LittleFS.begin(true)) { drawStatus("FS Error", "LittleFS failed"); delay(1500); return; }
 
@@ -242,6 +247,9 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const float PB_RATE  = 1.5f;
 
     int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    if (!ring && psramFound())
+      ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+    Serial.printf("[LongPlay] Pitch Up ring alloc: %s  totalSamples=%d\n", ring ? "OK" : "FAILED", (int)totalSamples);
     if (!ring)
     {
       int16_t pb[128];
@@ -391,6 +399,9 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const float PB_RATE  = 0.67f;
 
     int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    if (!ring && psramFound())
+      ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+    Serial.printf("[LongPlay] Pitch Dn ring alloc: %s  totalSamples=%d\n", ring ? "OK" : "FAILED", (int)totalSamples);
     if (!ring)
     {
       int16_t pb[128];
