@@ -94,9 +94,7 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 
 ---
 
-
-<img width="1232" height="1239" alt="mm_1780003214084_en" src="https://github.com/user-attachments/assets/782ab1dc-dfa1-415c-ad37-cccf8895d887" />
-
+<img width="1200" height="645" alt="voicemorpher-wiring-june-2026" src="https://github.com/user-attachments/assets/04b900e2-e5c6-4f7e-b327-e6794aacc578" />
 
 ## Setting Up
 
