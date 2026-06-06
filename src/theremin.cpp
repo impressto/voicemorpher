@@ -2,19 +2,19 @@
 #include "kitten_pcm.h"
 #include "beavis_pcm.h"
 #include "nana_pcm.h"
-#include "string_pcm.h"
+#include "choir_pcm.h"
 
-const char *TH_SOUND_NAMES[]    = { "Sine", "Kitten", "Beavis", "Nana", "String" };
+const char *TH_SOUND_NAMES[]    = { "Sine", "Kitten", "Beavis", "Nana", "Choir" };
 const char *TH_PITCH_SRC_NAMES[] = { "Joystick", "Sonar" };
-const char *TH_SOUND_PATHS[]    = { nullptr, "/kitten.wav", "/rizz.wav", "/nana.wav", nullptr };
+const char *TH_SOUND_PATHS[]    = { nullptr, "/kitten.wav", "/beavis.wav", "/nana.wav", "/choir.wav" };
 
 // Pre-computed 256-entry sine LUT
 static const int16_t SINE_LUT[256] PROGMEM = {
       0,   804,  1608,  2410,  3212,  4011,  4808,  5602,
    6393,  7179,  7962,  8739,  9512, 10278, 11039, 11793,
   12539, 13279, 14010, 14733, 15446, 16151, 16846, 17530,
-  18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594,
-  23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790,
+  18204, 18868, 19519, 20159, 20787, 21403,	22005,	22594,
+	23170,	23731,	24279,	24811,	25329,	25832,	26319,	26790,
   27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956,
   30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971,
   32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757,
@@ -123,7 +123,7 @@ void thereminMode()
   if      (g_th_sound == 1) { th_sample = KITTEN_PCM; th_sample_len = KITTEN_LEN; }
   else if (g_th_sound == 2) { th_sample = BEAVIS_PCM; th_sample_len = BEAVIS_LEN; }
   else if (g_th_sound == 3) { th_sample = NANA_PCM;   th_sample_len = NANA_LEN;   }
-  else if (g_th_sound == 4) { th_sample = STRING_PCM; th_sample_len = STRING_LEN; }
+  else if (g_th_sound == 4) { th_sample = CHOIR_PCM;  th_sample_len = CHOIR_LEN;  }
 
   // Reinitialize TX with low-latency DMA
   {
