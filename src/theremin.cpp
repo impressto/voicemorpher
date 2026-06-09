@@ -1,12 +1,11 @@
 #include "globals.h"
 #include "kitten_pcm.h"
 #include "beavis_pcm.h"
-#include "nana_pcm.h"
 #include "choir_pcm.h"
 
-const char *TH_SOUND_NAMES[]    = { "Sine", "Kitten", "Beavis", "Nana", "Choir" };
+const char *TH_SOUND_NAMES[]    = { "Sine", "Kitten", "Beavis", "Choir" };
 const char *TH_PITCH_SRC_NAMES[] = { "Joystick", "Sonar" };
-const char *TH_SOUND_PATHS[]    = { nullptr, "/kitten.wav", "/beavis.wav", "/nana.wav", "/choir.wav" };
+const char *TH_SOUND_PATHS[]    = { nullptr, "/kitten.wav", "/beavis.wav", "/choir.wav" };
 
 // Pre-computed 256-entry sine LUT
 static const int16_t SINE_LUT[256] PROGMEM = {
@@ -122,8 +121,7 @@ void thereminMode()
   int            th_sample_len = 0;
   if      (g_th_sound == 1) { th_sample = KITTEN_PCM; th_sample_len = KITTEN_LEN; }
   else if (g_th_sound == 2) { th_sample = BEAVIS_PCM; th_sample_len = BEAVIS_LEN; }
-  else if (g_th_sound == 3) { th_sample = NANA_PCM;   th_sample_len = NANA_LEN;   }
-  else if (g_th_sound == 4) { th_sample = CHOIR_PCM;  th_sample_len = CHOIR_LEN;  }
+  else if (g_th_sound == 3) { th_sample = CHOIR_PCM;  th_sample_len = CHOIR_LEN;  }
 
   // Reinitialize TX with low-latency DMA
   {

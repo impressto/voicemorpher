@@ -70,7 +70,7 @@ using namespace fs;
 // ── Inline constants ─────────────────────────────────────────────────────────
 #define C_BG ((uint16_t)0x0821)  // dark navy background
 
-constexpr int TH_SOUND_COUNT    = 5;
+constexpr int TH_SOUND_COUNT    = 4;
 constexpr int TH_PITCH_SRC_COUNT = 2;
 constexpr int MOOD_COUNT         = 7;
 
@@ -84,6 +84,7 @@ enum MenuItem
   MENU_LONG_PLAY,
   MENU_MOOD,
   MENU_THEREMIN,
+  MENU_MATHSYNTH,
   MENU_SETTINGS,
   MENU_ROOT_COUNT,
 
@@ -245,6 +246,9 @@ bool loadMoodTrack(int mood);
 void openMoodPlayback();
 void closeMoodPlayback();
 void mixMoodInto(int16_t *buf, int n);
+
+// math_synth.cpp
+void runMathSynthMenu();
 
 // theremin.cpp
 void calibrateThereminJoy();

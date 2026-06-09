@@ -1295,7 +1295,7 @@ void runMenuAction(int item)
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
       && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
       && item != MENU_MIC_GAIN && item != MENU_MOOD && item != MENU_THEREMIN
-      && item != MENU_SETTINGS)
+      && item != MENU_MATHSYNTH && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -1407,6 +1407,10 @@ void runMenuAction(int item)
     }
     case MENU_THEREMIN:
       runThereminMenu();
+      drawMenu();
+      break;
+    case MENU_MATHSYNTH:
+      runMathSynthMenu();
       drawMenu();
       break;
     case MENU_SETTINGS:

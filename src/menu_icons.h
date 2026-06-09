@@ -311,6 +311,7 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY
   ICON_MOOD,        // MENU_MOOD
   ICON_THEREMIN,    // MENU_THEREMIN
+  ICON_THEREMIN,    // MENU_MATHSYNTH
   ICON_SETTINGS,    // MENU_SETTINGS
   // Settings sub-menu items
   ICON_VOLUME,      // MENU_VOLUME

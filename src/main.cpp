@@ -1,4 +1,6 @@
 #include "globals.h"
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // ── Global variable definitions ──────────────────────────────────────────────
 
@@ -69,6 +71,7 @@ const char *menuLabels[] = {
   "Stored Play",
   "Mood Music",
   "Theremin",
+  "Wave Lab",
   "Settings",
   // Settings sub-menu items
   "Volume",
@@ -380,7 +383,7 @@ static void runStartupDiagnostics()
     tft.setTextColor(tft.color565(120, 200, 120));
     tft.setCursor(4, TFT_H - 14);
     tft.print("All OK — starting up...");
-    delay(10000);
+    delay(5000);
   }
 }
 
@@ -388,6 +391,7 @@ static void runStartupDiagnostics()
 
 void setup()
 {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // disable brownout detector
   Serial.begin(115200);
   delay(1000);
   Serial.println("VoiceMorpher ESP32-S3 - initializing...");
