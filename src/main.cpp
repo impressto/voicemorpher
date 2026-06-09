@@ -443,7 +443,7 @@ void setup()
   if (s_volumeLevel > 1.0f) s_volumeLevel = 1.0f;
   Serial.printf("✓ Volume loaded: %.2fx\n", savedGain);
   g_gate_threshold = g_prefs.getFloat("gate_thresh", PASSTHROUGH_GATE_THRESHOLD);
-  s_gateLevel      = g_gate_threshold / 5000.0f;
+  s_gateLevel      = g_gate_threshold / 3000.0f;
   Serial.printf("✓ Gate threshold loaded: %.0f\n", g_gate_threshold);
   g_live_gain     = g_prefs.getFloat("live_gain", 2.5f);
   s_liveGainLevel = (g_live_gain - 0.5f) / 5.5f;

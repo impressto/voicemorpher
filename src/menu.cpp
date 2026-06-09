@@ -1041,8 +1041,8 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
 
 int showPassthroughFxSubMenu()
 {
-  static const char *choices[] = { "Plain", "Echo", "Star Fighter", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up", "Pitch Dn" };
-  const int NUM_CHOICES = 9;
+  static const char *choices[] = { "Plain", "Echo", "Star Fighter", "Tremolo", "Chorus", "Distort", "Telephone", "Pitch Up", "Pitch Dn", "Delay 2s" };
+  const int NUM_CHOICES = 10;
   int sel = 0;
   unsigned long lastMoveMs = 0;
 
@@ -1664,11 +1664,11 @@ void runMenuAction(int item)
     }
     case MENU_FEEDBACK:
     {
-      float lvl = showLevelSubMenu("Feedback Gate", "Threshold", s_gateLevel, 0.0f, 5000.0f, "");
+      float lvl = showLevelSubMenu("Feedback Gate", "Threshold", s_gateLevel, 0.0f, 3000.0f, "");
       if (lvl >= 0.0f)
       {
         s_gateLevel = lvl;
-        g_gate_threshold = lvl * 5000.0f;
+        g_gate_threshold = lvl * 3000.0f;
         g_prefs.putFloat("gate_thresh", g_gate_threshold);
         char info[32];
         snprintf(info, sizeof(info), "%.0f saved", g_gate_threshold);

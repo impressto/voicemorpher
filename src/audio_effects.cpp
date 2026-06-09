@@ -556,12 +556,12 @@ void passthrough()
 
 void passthroughWithEffect(int fx)
 {
-  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up 8=pitch dn
+  // fx: 0=plain 1=echo 2=star fighter 3=tremolo 4=chorus 5=distort 6=telephone 7=pitch up 8=pitch dn 9=delay 2s
   static const char *fxNames[] = {
     "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus",
-    "Distort", "Telephone", "Pitch Up", "Pitch Dn"
+    "Distort", "Telephone", "Pitch Up", "Pitch Dn", "Delay 2s"
   };
-  const char *fxLabel = (fx >= 0 && fx <= 8) ? fxNames[fx] : "Live FX";
+  const char *fxLabel = (fx >= 0 && fx <= 9) ? fxNames[fx] : "Live FX";
 
   // Draw oscilloscope screen
   tft.fillScreen(C_BG);
@@ -605,6 +605,15 @@ void passthroughWithEffect(int fx)
   float hp_x1 = 0.0f, hp_y1 = 0.0f;
   float lp_y1 = 0.0f;
 
+  // Delay 2s: pure delay line, gate applied to input side
+  const int DELAY_LEN = SAMPLE_RATE * 2;   // 22050 samples = 44 KB
+  int16_t *delayBuf = nullptr;
+  int delayWr = 0;
+  if (fx == 9) {
+    delayBuf = (int16_t *)heap_caps_calloc(DELAY_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    if (!delayBuf) fx = 0;
+  }
+
   // Pitch Up/Down: granular pitch shift
   const int   PITCH_BUF      = 1024;
   const int   PITCH_GRAIN    = 256;
@@ -642,6 +651,16 @@ void passthroughWithEffect(int fx)
     size_t bytes_read = 0;
     i2s_read(I2S_RX_PORT, chunk, CHUNK_SAMPLES * sizeof(int16_t), &bytes_read, portMAX_DELAY);
     size_t n = bytes_read / sizeof(int16_t);
+
+    // Apply mic gain before gate — keeps passthrough sensitivity consistent with recording
+    if (g_mic_gain != 1.0f) {
+      for (size_t i = 0; i < n; ++i) {
+        int32_t s = (int32_t)((float)chunk[i] * g_mic_gain);
+        if (s > INT16_MAX) s = INT16_MAX;
+        else if (s < INT16_MIN) s = INT16_MIN;
+        chunk[i] = (int16_t)s;
+      }
+    }
 
     {
       float rawPeak = 0.0f;
@@ -814,6 +833,13 @@ void passthroughWithEffect(int fx)
         if (out < INT16_MIN) out = INT16_MIN;
         s = out;
       }
+      else if (fx == 9)  // 2-second delay — gate applied to input, output plays freely
+      {
+        int16_t toStore = (gateEnv >= g_gate_threshold) ? (int16_t)s : 0;
+        s = delayBuf[delayWr];
+        delayBuf[delayWr] = toStore;
+        delayWr = (delayWr + 1) % DELAY_LEN;
+      }
 
       // Frequency shift: 7 Hz ring-mod at 25% depth
       float shift = 0.75f + 0.25f * cosf(2.0f * 3.14159265f * freqShiftPhase);
@@ -826,11 +852,13 @@ void passthroughWithEffect(int fx)
       chunk[i] = (int16_t)gained;
     }
 
-    // Gate with hold timer
-    if (gateEnv < g_gate_threshold)
-      gateHoldUntilMs = millis() + 200;
-    if (millis() < gateHoldUntilMs)
-      memset(chunk, 0, n * sizeof(int16_t));
+    // Gate with hold timer — skipped for delay mode (gate is applied on the input side)
+    if (fx != 9) {
+      if (gateEnv < g_gate_threshold)
+        gateHoldUntilMs = millis() + 200;
+      if (millis() < gateHoldUntilMs)
+        memset(chunk, 0, n * sizeof(int16_t));
+    }
 
     size_t bytes_written = 0;
     i2s_write(I2S_TX_PORT, chunk, bytes_read, &bytes_written, portMAX_DELAY);
@@ -877,4 +905,5 @@ void passthroughWithEffect(int fx)
   if (echoBuf)   free(echoBuf);
   if (chorusBuf) free(chorusBuf);
   if (pitchRing) free(pitchRing);
+  if (delayBuf)  free(delayBuf);
 }

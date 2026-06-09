@@ -29,6 +29,10 @@ static int16_t s_ks_buf[KS_BUF_MAX];
 static int     s_ks_pos = 0;
 static int     s_ks_len = 0;
 
+// Oscilloscope capture buffer — 640 samples (~58 ms) for live waveform display
+static int16_t  s_osc_buf[640];
+static uint32_t s_osc_wr = 0;
+
 static void ks_pluck(float freq)
 {
     int len = (int)((float)SAMPLE_RATE / freq + 0.5f);
@@ -40,19 +44,6 @@ static void ks_pluck(float freq)
         s_ks_buf[i] = (int16_t)((rand() % 65536) - 32768);
 }
 
-// Evaluate one normalised sample (-1..1) for wave type wv at phase p (radians).
-// WV_KS uses a decaying-sine approximation for the oscilloscope display only.
-static float waveSample(int wv, float p)
-{
-    switch (wv) {
-        case WV_SINE:   return sinf(p);
-        case WV_SQUARE: return (fmodf(p, 2.0f*(float)M_PI) < (float)M_PI) ? 1.0f : -1.0f;
-        case WV_SAW:    return fmodf(p, 2.0f*(float)M_PI) * (float)(1.0/M_PI) - 1.0f;
-        case WV_FM:     return sinf(p + 3.0f * sinf(2.0f * p));
-        case WV_KS:     return sinf(p) * expf(-p * 0.15f);  // decaying sine — visual only
-    }
-    return 0.0f;
-}
 
 static void drawWaveLabFrame(int wv)
 {
@@ -76,23 +67,31 @@ static void drawWaveLabFrame(int wv)
     tft.print("Y:pitch  X:vol  tap:wave  hold:exit");
 }
 
-// Redraws the oscilloscope by evaluating the equation directly — no capture buffer needed.
-// Always shows 3 complete cycles, perfectly stable regardless of frequency.
-static void drawOsc(int wv, float freq, uint16_t col)
+// Draws the oscilloscope from captured audio samples.
+// Zero-crossing sync keeps the display stable even as pitch changes.
+// Amplitude reflects actual volume — flat line when sound is off.
+static void drawOsc(uint16_t col)
 {
-    const float twoPi   = 2.0f * (float)M_PI;
-    const float display = 3.0f * twoPi;   // 3 full cycles across the screen
-    const int   scale   = OSC_H / 2 - 4;
-    const int   w       = TFT_W - 2;
+    const int w     = TFT_W - 2;   // 318 pixels
+    const int scale = OSC_H / 2 - 4;  // 82 pixels full scale at amp=28000
+
+    // Find first upward zero-crossing in the older half of the ring buffer
+    uint32_t base  = s_osc_wr - 640;
+    int      start = 0;
+    for (int i = 1; i < 320; i++) {
+        int16_t a = s_osc_buf[(base + i - 1) & 639];
+        int16_t b = s_osc_buf[(base + i)     & 639];
+        if (a <= 0 && b > 0) { start = i; break; }
+    }
 
     tft.fillRect(1, OSC_Y + 1, w, OSC_H - 2, C_BG);
     tft.drawFastHLine(1, OSC_CY, w, tft.color565(25, 35, 70));
     tft.startWrite();
     for (int x = 0; x < w - 1; x++) {
-        float p0 = display * x       / (w - 1);
-        float p1 = display * (x + 1) / (w - 1);
-        int y0 = OSC_CY - (int)(waveSample(wv, p0) * scale);
-        int y1 = OSC_CY - (int)(waveSample(wv, p1) * scale);
+        int a  = s_osc_buf[(base + start + x)     & 639];
+        int b  = s_osc_buf[(base + start + x + 1) & 639];
+        int y0 = OSC_CY - a * scale / 28000;
+        int y1 = OSC_CY - b * scale / 28000;
         y0 = constrain(y0, OSC_Y + 1, OSC_Y + OSC_H - 2);
         y1 = constrain(y1, OSC_Y + 1, OSC_Y + OSC_H - 2);
         tft.drawLine(x + 1, y0, x + 2, y1, col);
@@ -129,7 +128,7 @@ void runMathSynthMenu()
     while (true)
     {
         // ── Controls ──────────────────────────────────────────────────────────
-        float yRaw = analogRead(JOY_Y_PIN) / 4095.0f;
+        float yRaw = 1.0f - analogRead(JOY_Y_PIN) / 4095.0f;
         float xRaw = readJoystickXIntensity();
         float freq = 80.0f * powf(11.0f, yRaw);      // 80–880 Hz, logarithmic
         float amp  = xRaw * 28000.0f;
@@ -166,6 +165,8 @@ void runMathSynthMenu()
                 }
             }
             buf[i] = (int16_t)(s * amp);
+            s_osc_buf[s_osc_wr & 639] = buf[i];
+            s_osc_wr++;
             phase += dphi;
             if (phase >= 2.0f * (float)M_PI) phase -= 2.0f * (float)M_PI;
         }
@@ -176,7 +177,7 @@ void runMathSynthMenu()
         // ── Oscilloscope refresh every 4 chunks (~93 ms) ──────────────────────
         if (++frameCount >= 4) {
             frameCount = 0;
-            drawOsc(wv, freq, WV_COL[wv]);
+            drawOsc(WV_COL[wv]);
             updateFreqBar(freq);
         }
 

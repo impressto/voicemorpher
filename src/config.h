@@ -14,7 +14,7 @@
 // Output is silenced when the smoothed input envelope drops below this level,
 // breaking the acoustic feedback loop. Raise if gate triggers on real speech.
 #ifndef PASSTHROUGH_GATE_THRESHOLD
-#define PASSTHROUGH_GATE_THRESHOLD 800.0f
+#define PASSTHROUGH_GATE_THRESHOLD 1500.0f
 #endif
 
 // Default playback volume multiplier for MAX98357A output.
