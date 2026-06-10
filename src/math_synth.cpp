@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BB, WV_PD, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BB, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Bytebeat", "Phase Dist"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Bytebeat", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -13,7 +13,10 @@ static const char *WV_EQ[WV_COUNT] = {
     "y = sin(2*pi*f*t + 3*sin(4*pi*f*t))",
     "y[n] = (buf[n] + buf[n+1]) / 2,  N = Fs/f",
     "(t*(t>>8|t>>13))&255",
-    "y = sin(distorted_phase(f,t))"
+    "y = sin(distorted_phase(f,t))",
+    "y = sin(phi_n)*A_n,  f_n -> f_target",
+    "y = sin(phi)*A_body + HPF(noise)*A_snare",
+    "y = HPF(sum of 6 square osc) * A_n"
 };
 static const uint16_t WV_COL[WV_COUNT] = {
     0x07FF,  // cyan    — sine
@@ -23,6 +26,9 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0xFD20,  // orange  — plucked
     0xF800,  // red     — bytebeat
     0xB41F,  // violet  — phase distortion
+    0xFBE0,  // gold    — kick drum
+    0xC618,  // silver  — snare drum
+    0x867D,  // sky blue— hi-hat
 };
 
 static const int OSC_Y   = 38;    // starts right after header divider
@@ -63,6 +69,113 @@ static uint32_t s_bb_t = 0;
 
 // --- Phase Distortion state --------------------------------------------------
 static float s_pd_bend = 0.7f;   // 0.5 = pure sine, 0.95 = near-sawtooth
+
+// --- Drum engine utilities ----------------------------------------------------
+
+// Fast 32-bit xorshift white noise, output range [-1, 1].
+static inline float whiteNoise()
+{
+    static uint32_t x = 123456789;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return ((float)x / 4294967296.0f) * 2.0f - 1.0f;
+}
+
+// One-pole high-pass filter — strips the low end so noise sounds snappy, not static.
+struct OnePoleHPF {
+    float prevIn = 0.0f, prevOut = 0.0f;
+    float process(float in)
+    {
+        float out = 0.85f * (prevOut + in - prevIn);
+        prevIn = in;
+        prevOut = out;
+        return out;
+    }
+};
+
+// --- Kick drum state (pitch sweep + amplitude decay) --------------------------
+static float s_kick_amp   = 0.0f;
+static float s_kick_phase = 0.0f;
+static float s_kick_freq  = 45.0f;
+static const float KICK_F_TARGET = 45.0f;
+
+static void triggerKick(float fStart)
+{
+    s_kick_amp   = 1.0f;
+    s_kick_phase = 0.0f;
+    s_kick_freq  = fStart;
+}
+
+// --- Snare drum state (tone body + filtered noise) ----------------------------
+static float     s_snr_body_amp  = 0.0f;
+static float     s_snr_noise_amp = 0.0f;
+static float     s_snr_phase     = 0.0f;
+static OnePoleHPF s_snr_hpf;
+
+static void triggerSnare()
+{
+    s_snr_body_amp  = 1.0f;
+    s_snr_noise_amp = 0.85f;
+    s_snr_phase     = 0.0f;
+}
+
+// --- Hi-hat state (6 metallic square oscillators + HPF) ------------------------
+static float      s_hat_amp   = 0.0f;
+static float      s_hat_phase[6] = {0,0,0,0,0,0};
+static OnePoleHPF  s_hat_hpf;
+static const float HAT_FREQS[6] = {245.0f, 306.0f, 384.0f, 421.0f, 511.0f, 725.0f};
+
+static void triggerHat()
+{
+    s_hat_amp = 1.0f;
+}
+
+// One sample of sine-pitch-sweep kick. liveFStart is the f_start used on
+// the next auto re-trigger (lets the joystick retune the kick live).
+static inline float kickNextSample(float liveFStart)
+{
+    float s = sinLUT(s_kick_phase) * s_kick_amp;
+    s_kick_phase += 2.0f * (float)M_PI * s_kick_freq / SAMPLE_RATE;
+    if (s_kick_phase >= 2.0f * (float)M_PI) s_kick_phase -= 2.0f * (float)M_PI;
+    s_kick_freq += (KICK_F_TARGET - s_kick_freq) * 0.01f;  // pitch sweep, ~25 ms
+    s_kick_amp  *= 0.9992f;                                 // amplitude tail, ~0.8 s
+    if (s_kick_amp < 0.001f) triggerKick(liveFStart);       // re-trigger with current pitch
+    return s;
+}
+
+// One sample of tone-body + filtered-noise snare. dphi is the body
+// oscillator's phase increment for this sample.
+static inline float snrNextSample(float dphi)
+{
+    float body  = sinLUT(s_snr_phase) * s_snr_body_amp * 0.6f;
+    float noise = s_snr_hpf.process(whiteNoise()) * s_snr_noise_amp * 0.6f;
+    float s = body + noise;
+    if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
+    s_snr_phase += dphi;
+    if (s_snr_phase >= 2.0f * (float)M_PI) s_snr_phase -= 2.0f * (float)M_PI;
+    s_snr_body_amp  *= 0.997f;  // ~0.2 s
+    s_snr_noise_amp *= 0.998f;  // ~0.3 s
+    if (s_snr_noise_amp < 0.001f) triggerSnare();
+    return s;
+}
+
+// One sample of 6-oscillator metallic hi-hat. alpha is this sample's
+// amplitude decay factor (closed = fast, open = slow).
+static inline float hatNextSample(float alpha)
+{
+    float sum = 0.0f;
+    for (int h = 0; h < 6; h++) {
+        s_hat_phase[h] += 2.0f * (float)M_PI * HAT_FREQS[h] / SAMPLE_RATE;
+        if (s_hat_phase[h] >= 2.0f * (float)M_PI) s_hat_phase[h] -= 2.0f * (float)M_PI;
+        sum += (s_hat_phase[h] < (float)M_PI) ? 1.0f : -1.0f;
+    }
+    float s = s_hat_hpf.process(sum / 6.0f) * s_hat_amp;
+    if (s > 1.0f) s = 1.0f; else if (s < -1.0f) s = -1.0f;
+    s_hat_amp *= alpha;
+    if (s_hat_amp < 0.001f) triggerHat();
+    return s;
+}
 
 // --- Oscilloscope capture buffer (~58 ms at 11025 Hz) -----------------------
 static int16_t  s_osc_buf[640];
@@ -169,6 +282,9 @@ void runMathSynthMenu()
         float dphi = 2.0f * (float)M_PI * freq / SAMPLE_RATE;
         float amp;
 
+        float snrDphi   = 0.0f;
+        float hatAlpha  = 0.99f;
+
         if (wv == WV_PD) {
             // X controls distortion depth (0.5 = sine, 0.95 = near-sawtooth)
             s_pd_bend = 0.5f + xRaw * 0.45f;
@@ -177,6 +293,15 @@ void runMathSynthMenu()
             // Y controls t increment speed (pitch-ish), X controls volume
             bb_step = (uint32_t)(yRaw * 3.5f + 0.5f);
             if (bb_step < 1) bb_step = 1;
+            amp = xRaw * 28000.0f;
+        } else if (wv == WV_SNARE) {
+            // Y controls snare body tone (80–400 Hz), X controls volume
+            float bodyFreq = 80.0f + yRaw * 320.0f;
+            snrDphi = 2.0f * (float)M_PI * bodyFreq / SAMPLE_RATE;
+            amp = xRaw * 28000.0f;
+        } else if (wv == WV_HAT) {
+            // Y controls decay length: forward = closed (fast), back = open (slow); X controls volume
+            hatAlpha = 0.9975f - yRaw * 0.0125f;
             amp = xRaw * 28000.0f;
         } else {
             amp = xRaw * 28000.0f;
@@ -236,6 +361,15 @@ void runMathSynthMenu()
                     s = sinLUT(bent * (2.0f * (float)M_PI));
                     break;
                 }
+                case WV_KICK:
+                    s = kickNextSample(freq);
+                    break;
+                case WV_SNARE:
+                    s = snrNextSample(snrDphi);
+                    break;
+                case WV_HAT:
+                    s = hatNextSample(hatAlpha);
+                    break;
             }
             buf[i] = (int16_t)(s * amp);
             s_osc_buf[s_osc_wr & 639] = buf[i];
@@ -265,6 +399,27 @@ void runMathSynthMenu()
                 snprintf(tmp, sizeof(tmp), "%.0f Hz  depth=%.2f  |  Y:pitch  X:depth  hold:exit", freq, s_pd_bend);
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
+            } else if (wv == WV_KICK) {
+                tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
+                tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
+                char tmp[48];
+                snprintf(tmp, sizeof(tmp), "%.0f->%.0fHz | Y:pitch X:vol tap:next hold:exit", freq, KICK_F_TARGET);
+                tft.setCursor(4, BOT_STA);
+                tft.print(tmp);
+            } else if (wv == WV_SNARE) {
+                tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
+                tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
+                char tmp[48];
+                snprintf(tmp, sizeof(tmp), "body=%.0fHz | Y:tone X:vol tap:next hold:exit", 80.0f + yRaw * 320.0f);
+                tft.setCursor(4, BOT_STA);
+                tft.print(tmp);
+            } else if (wv == WV_HAT) {
+                tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
+                tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
+                char tmp[48];
+                snprintf(tmp, sizeof(tmp), "decay=%s | Y:decay X:vol tap:next hold:exit", (yRaw < 0.5f) ? "open" : "closed");
+                tft.setCursor(4, BOT_STA);
+                tft.print(tmp);
             } else {
                 updateFreqBar(freq);
             }
@@ -283,6 +438,9 @@ void runMathSynthMenu()
                 phase = 0.0f; phaseMod = 0.0f;
                 s_ks_len = 0; ksPluckTimer = 0;
                 s_bb_t = 0;
+                if (wv == WV_KICK)  triggerKick(freq);
+                if (wv == WV_SNARE) triggerSnare();
+                if (wv == WV_HAT)   triggerHat();
                 drawWaveLabFrame(wv);
             }
             btnWasUp = true;
