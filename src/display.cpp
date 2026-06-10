@@ -71,6 +71,27 @@ void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h, float level)
     fillGradV(x + 1, y + 1, fw, h - 2, 0, 210, 100, 200, 200, 0);
 }
 
+// ── Per-item accent colors (R,G,B) — indexed by MenuItem enum value ──────────
+// Covers the root menu (0..MENU_ROOT_COUNT-1) and settings items (MENU_STORAGE_COUNT..MENU_SETTINGS_COUNT-1)
+const uint8_t ITEM_RGB[][3] = {
+    {220,  60,  60},  // MENU_RECORD         — red
+    { 60, 200,  80},  // MENU_PLAY           — green
+    {160,  80, 220},  // MENU_PASSTHROUGH    — purple
+    {220, 140,  30},  // MENU_LONG_REC       — amber
+    { 40, 200, 180},  // MENU_LONG_PLAY      — teal
+    {220,  80, 180},  // MENU_MOOD           — pink
+    {220, 200,  40},  // MENU_THEREMIN       — yellow
+    { 40, 180, 255},  // MENU_MATHSYNTH      — electric blue
+    {140, 140, 160},  // MENU_SETTINGS       — silver
+    // Settings sub-menu items
+    {220, 160,  40},  // MENU_VOLUME         — gold
+    {220,  80,  60},  // MENU_FEEDBACK       — red-orange
+    { 80, 220,  80},  // MENU_LIVE_GAIN      — bright green
+    { 80, 160, 220},  // MENU_MIC_GAIN       — sky blue
+    { 60, 200, 200},  // MENU_CALIBRATE_JOY  — teal
+    {160,  80, 220},  // MENU_WAVELAB_VOL    — violet
+};
+
 // ── Main menu ────────────────────────────────────────────────────────────────
 
 void drawMenu()
@@ -81,22 +102,28 @@ void drawMenu()
   for (int i = 0; i < MENU_ROOT_COUNT; ++i)
   {
     int16_t y = i * ITEM_H;
+    uint8_t r = ITEM_RGB[i][0], g = ITEM_RGB[i][1], b = ITEM_RGB[i][2];
+    uint16_t accentCol = tft.color565(r, g, b);
     uint16_t iconColor;
+
     if (i == currentMenu)
     {
-      fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
-      tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+      // Selected: dark-tinted gradient in the item's hue + bright accent bar
+      fillGradH(0, y, TFT_W, ITEM_H - 1, r/4, g/4, b/4, r/10, g/10, b/10);
+      tft.fillRect(0, y, 4, ITEM_H - 1, accentCol);
       tft.setTextColor(TFT_WHITE);
       iconColor = TFT_WHITE;
     }
     else
     {
-      uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
-      tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
-      tft.setTextColor(0xDEFB);
-      iconColor = 0xDEFB;
+      // Unselected: very dark tint + dim accent bar + item-colored text
+      tft.fillRect(0, y, TFT_W, ITEM_H - 1, tft.color565(r/12, g/12, b/12));
+      tft.fillRect(0, y, 4, ITEM_H - 1, tft.color565(r/3, g/3, b/3));
+      uint16_t tc = tft.color565((uint8_t)((int)r*3/4), (uint8_t)((int)g*3/4), (uint8_t)((int)b*3/4));
+      tft.setTextColor(tc);
+      iconColor = tc;
     }
-    tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+    tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(r/8, g/8, b/8));
     tft.drawBitmap(6, y + 5, MENU_ICONS[i], 16, 16, iconColor);
     tft.setCursor(28, y + 5);
     tft.print(menuLabels[i]);

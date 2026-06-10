@@ -49,6 +49,8 @@ float   s_liveGainLevel  = (2.5f - 0.5f) / 5.5f;
 float   g_mic_gain       = 1.0f;
 float   s_micGainLevel   = (1.0f - 0.1f) / 1.9f;
 float   s_volumeLevel    = (DEFAULT_PLAYBACK_GAIN - 0.5f) / 9.5f;
+float   g_wl_max_amp     = 28000.0f;
+float   s_wavLabVolLevel = 1.0f;
 int     g_long_rec_secs  = 60;
 
 int     g_th_pitch_src   = 0;
@@ -79,6 +81,7 @@ const char *menuLabels[] = {
   "Live Gain",
   "Mic Gain",
   "Joy Cal",
+  "WaveLab Vol",
   // Effects sub-menu items
   "Reverse",
   "Pitch",
@@ -457,6 +460,11 @@ void setup()
   if (g_th_sound < 0 || g_th_sound >= TH_SOUND_COUNT) g_th_sound = 0;
   g_th_pitch_src = g_prefs.getInt("th_pitch_src", 0);
   if (g_th_pitch_src < 0 || g_th_pitch_src >= TH_PITCH_SRC_COUNT) g_th_pitch_src = 0;
+  g_wl_max_amp = g_prefs.getFloat("wl_vol", 28000.0f);
+  if (g_wl_max_amp < 2800.0f)  g_wl_max_amp = 2800.0f;
+  if (g_wl_max_amp > 28000.0f) g_wl_max_amp = 28000.0f;
+  s_wavLabVolLevel = (g_wl_max_amp / 28000.0f - 0.1f) / 0.9f;
+  Serial.printf("✓ WaveLab max amp loaded: %.0f (%.0f%%)\n", g_wl_max_amp, g_wl_max_amp / 280.0f);
   g_mood      = g_prefs.getInt("mood", 0);
   g_mood_gain = g_prefs.getFloat("mood_vol", MOOD_MUSIC_GAIN);
   s_moodVolLevel = g_mood_gain / 0.5f;

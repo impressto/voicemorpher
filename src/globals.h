@@ -95,6 +95,7 @@ enum MenuItem
   MENU_LIVE_GAIN,
   MENU_MIC_GAIN,
   MENU_CALIBRATE_JOY,
+  MENU_WAVELAB_VOL,
   MENU_SETTINGS_COUNT,
 
   MENU_REVERSE = MENU_SETTINGS_COUNT,
@@ -154,6 +155,8 @@ extern float   s_liveGainLevel;
 extern float   g_mic_gain;
 extern float   s_micGainLevel;
 extern float   s_volumeLevel;
+extern float   g_wl_max_amp;
+extern float   s_wavLabVolLevel;
 extern int     g_long_rec_secs;
 
 extern int      g_th_pitch_src;
@@ -169,6 +172,8 @@ extern float    s_moodVolLevel;
 
 // ── Const array externs ───────────────────────────────────────────────────────
 extern const char *menuLabels[];
+// Per-item accent RGB — indexed by MenuItem enum (covers root + settings range)
+extern const uint8_t ITEM_RGB[][3];
 extern const char *TH_SOUND_NAMES[];
 extern const char *TH_PITCH_SRC_NAMES[];
 extern const char *TH_SOUND_PATHS[];

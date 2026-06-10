@@ -1,5 +1,7 @@
 #include "globals.h"
 
+static float s_longPitchRate = 1.5f;   // set by pitch slider before calling playFromLittleFSWithEffect
+
 static const char *longSlotPath(int slot)
 {
   static const char *paths[2] = { "/longrec1.pcm", "/longrec2.pcm" };
@@ -244,7 +246,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const int   PB_GRAIN = 441;
     const int   PB_FADE  = 48;
     const int   PB_GAP   = 100;
-    const float PB_RATE  = 1.5f;
+    const float PB_RATE  = s_longPitchRate;
 
     int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring && psramFound())
@@ -396,7 +398,7 @@ static void playFromLittleFSWithEffect(int fx, const char *path)
     const int   PB_GRAIN = 441;
     const int   PB_FADE  = 48;
     const int   PB_GAP   = 100;
-    const float PB_RATE  = 0.67f;
+    const float PB_RATE  = s_longPitchRate;
 
     int16_t *ring = (int16_t *)heap_caps_calloc(PB_LEN, sizeof(int16_t), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     if (!ring && psramFound())
@@ -1086,17 +1088,17 @@ int showPassthroughFxSubMenu()
 int showLongPlayFxSubMenu()
 {
   static const char *labels[] = {
-    "Plain",    "Echo",      "Star Fghtr", "Tremolo",   "Chorus",
-    "Pitch Up", "Pitch Dn",  "Stutter",    "Monster",   "Alien",
+    "Plain",    "Echo",      "Star Fghtr", "Tremolo",  "Chorus",
+    "Pitch",    "Stutter",   "Monster",    "Alien",
     "Telephone","Wavefold"
   };
   static const uint8_t *icons[] = {
-    ICON_PLAY,    ICON_ECHO,     ICON_RINGMOD,   ICON_TREMOLO, ICON_CHORUS,
-    ICON_PITCH,   ICON_PITCH,    ICON_STUTTER,   ICON_MONSTER, ICON_ALIEN,
+    ICON_PLAY,    ICON_ECHO,    ICON_RINGMOD,  ICON_TREMOLO, ICON_CHORUS,
+    ICON_PITCH,   ICON_STUTTER, ICON_MONSTER,  ICON_ALIEN,
     ICON_TELEPHONE, ICON_WAVEFOLD
   };
   static int sel = 0;
-  return showIconList(labels, icons, 12, sel);
+  return showIconList(labels, icons, 11, sel);
 }
 
 int showSettingsSubMenu()
@@ -1120,22 +1122,25 @@ int showSettingsSubMenu()
       {
         int itemEnum = MENU_STORAGE_COUNT + i;
         int16_t y = i * ITEM_H;
+        uint8_t r = ITEM_RGB[itemEnum][0], g = ITEM_RGB[itemEnum][1], b = ITEM_RGB[itemEnum][2];
+        uint16_t accentCol = tft.color565(r, g, b);
         uint16_t iconColor;
         if (itemEnum == sel)
         {
-          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
-          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          fillGradH(0, y, TFT_W, ITEM_H - 1, r/4, g/4, b/4, r/10, g/10, b/10);
+          tft.fillRect(0, y, 4, ITEM_H - 1, accentCol);
           tft.setTextColor(TFT_WHITE);
           iconColor = TFT_WHITE;
         }
         else
         {
-          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
-          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
-          tft.setTextColor(0xDEFB);
-          iconColor = 0xDEFB;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, tft.color565(r/12, g/12, b/12));
+          tft.fillRect(0, y, 4, ITEM_H - 1, tft.color565(r/3, g/3, b/3));
+          uint16_t tc = tft.color565((uint8_t)((int)r*3/4), (uint8_t)((int)g*3/4), (uint8_t)((int)b*3/4));
+          tft.setTextColor(tc);
+          iconColor = tc;
         }
-        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(r/8, g/8, b/8));
         tft.drawBitmap(6, y + 5, MENU_ICONS[itemEnum], 16, 16, iconColor);
         tft.setCursor(28, y + 5);
         tft.print(menuLabels[itemEnum]);
@@ -1636,15 +1641,30 @@ void runMenuAction(int item)
     {
       int slot = showSlotSubMenu("Stored Play", longSlotPath, 2);
       if (slot < 0) break;
-      int fx = showLongPlayFxSubMenu();
-      static const char *fxNames[] = { "Plain", "Echo", "Star Fghtr", "Tremolo", "Chorus", "Pitch Up", "Pitch Dn", "Stutter", "Monster", "Alien", "Telephone", "Wavefold" };
-      char status[32];
-      snprintf(status, sizeof(status), "%s  Btn:stop", fxNames[fx]);
-      g_waveform_visible = true;
-      playFromLittleFSWithEffect(fx, longSlotPath(slot));
-      g_waveform_visible = false;
-      g_wf_use_peaks = false;
-      g_wf_total = 0;
+      // Menu has 11 items (Pitch Up/Dn merged). Map to internal fx 0-11 (which skips no 6).
+      // menuSel: 0 1 2 3 4  5  6  7  8   9  10
+      // fx:      0 1 2 3 4  *  7  8  9  10  11   (* = 5 or 6 chosen by rate)
+      static const int LP_FX_MAP[] = { 0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11 };
+      while (true)
+      {
+        int menuSel = showLongPlayFxSubMenu();
+        if (menuSel < 0) break;
+        int fx = LP_FX_MAP[menuSel];
+        if (menuSel == 5)  // "Pitch" — show speed slider, then pick algorithm by rate
+        {
+          float initLvl = s_pitchLevel > 0.01f ? s_pitchLevel : 0.545f;  // default ≈1.5×
+          float lvl = showLevelSubMenu("Pitch", "Speed", initLvl, 0.3f, 2.5f, "x");
+          if (lvl < 0.0f) continue;
+          s_pitchLevel    = lvl;
+          s_longPitchRate = 0.3f + lvl * 2.2f;
+          fx = (s_longPitchRate >= 1.0f) ? 5 : 6;  // up algorithm or down algorithm
+        }
+        g_waveform_visible = true;
+        playFromLittleFSWithEffect(fx, longSlotPath(slot));
+        g_waveform_visible = false;
+        g_wf_use_peaks = false;
+        g_wf_total = 0;
+      }
       break;
     }
     case MENU_VOLUME:
@@ -1710,6 +1730,21 @@ void runMenuAction(int item)
     case MENU_CALIBRATE_JOY:
       calibrateThereminJoy();
       break;
+    case MENU_WAVELAB_VOL:
+    {
+      float lvl = showLevelSubMenu("WaveLab Vol", "Max level", s_wavLabVolLevel, 10.0f, 100.0f, "%");
+      if (lvl >= 0.0f)
+      {
+        s_wavLabVolLevel = lvl;
+        g_wl_max_amp = 28000.0f * (0.1f + lvl * 0.9f);
+        g_prefs.putFloat("wl_vol", g_wl_max_amp);
+        char info[32];
+        snprintf(info, sizeof(info), "Max: %.0f%% saved", 10.0f + lvl * 90.0f);
+        drawStatus("WaveLab vol saved!", info);
+        delay(1000);
+      }
+      break;
+    }
     case MENU_MOOD:
       runMoodMenu();
       break;

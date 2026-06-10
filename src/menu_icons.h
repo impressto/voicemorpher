@@ -319,6 +319,7 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_LIVE_FX,     // MENU_LIVE_GAIN
   ICON_MIC_SENS,    // MENU_MIC_GAIN
   ICON_JOYCAL,      // MENU_CALIBRATE_JOY
+  ICON_VOLUME,      // MENU_WAVELAB_VOL
   // Effects sub-menu items (indices 13+)
   ICON_REVERSE,
   ICON_PITCH,
