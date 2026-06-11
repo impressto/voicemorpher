@@ -309,11 +309,41 @@ static void updateFreqBar(float freq)
     tft.print(tmp);
 }
 
+// Bytebeat formulas occupy a contiguous block of the WV_* enum
+// (WV_BLUEBERRY..WV_BASSLINE). The top-level picker collapses that block
+// into one "Bytebeats" entry; picking it opens a second list scoped to
+// just those formulas.
+static const int WV_BB_FIRST  = WV_BLUEBERRY;
+static const int WV_BB_COUNT  = WV_BASSLINE - WV_BLUEBERRY + 1;
+static const int WV_TOP_COUNT = WV_COUNT - WV_BB_COUNT + 1;
+
 // Lets the user jump straight to any wave/drum type instead of cycling
 // through them one tap at a time. Returns the picked index, or -1 (X = back).
-static int showWaveLabPicker(int sel)
+static int showWaveLabPicker(int wv)
 {
-    return showIconList(WV_NAMES, WV_ICONS, WV_COUNT, sel);
+    const char    *topNames[WV_TOP_COUNT];
+    const uint8_t *topIcons[WV_TOP_COUNT];
+    int t = 0;
+    for (int i = 0; i < WV_BB_FIRST; i++) { topNames[t] = WV_NAMES[i]; topIcons[t] = WV_ICONS[i]; t++; }
+    topNames[t] = "Bytebeats"; topIcons[t] = ICON_THEREMIN; t++;
+    for (int i = WV_BB_FIRST + WV_BB_COUNT; i < WV_COUNT; i++) { topNames[t] = WV_NAMES[i]; topIcons[t] = WV_ICONS[i]; t++; }
+
+    int topSel = (wv >= WV_BB_FIRST && wv < WV_BB_FIRST + WV_BB_COUNT)
+                  ? WV_BB_FIRST
+                  : (wv < WV_BB_FIRST ? wv : wv - WV_BB_COUNT + 1);
+
+    while (true) {
+        int picked = showIconList(topNames, topIcons, WV_TOP_COUNT, topSel);
+        if (picked < 0) return -1;   // X = back to main menu
+        if (picked != WV_BB_FIRST) {
+            return (picked < WV_BB_FIRST) ? picked : picked - 1 + WV_BB_COUNT;
+        }
+
+        int bbSel = (wv >= WV_BB_FIRST && wv < WV_BB_FIRST + WV_BB_COUNT) ? (wv - WV_BB_FIRST) : 0;
+        int bbPicked = showIconList(WV_NAMES + WV_BB_FIRST, WV_ICONS + WV_BB_FIRST, WV_BB_COUNT, bbSel);
+        if (bbPicked < 0) continue;  // X = back to top-level list
+        return WV_BB_FIRST + bbPicked;
+    }
 }
 
 void runMathSynthMenu()
