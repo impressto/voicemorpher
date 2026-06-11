@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_NOLIMIT, WV_EASYBEAT, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_DAFT, WV_BLIPPY, WV_REBEL, WV_GORT, WV_SMOOTH, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_NOLIMIT, WV_EASYBEAT, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_DAFT, WV_BLIPPY, WV_REBEL, WV_GORT, WV_SMOOTH, WV_SADNESS, WV_DRUMKIT, WV_SWAG, WV_BERLIN, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "No Limit", "Easybeat", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Daft", "Blippy", "Rebel", "Gort Dance", "Smooth Thing", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "No Limit", "Easybeat", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Daft", "Blippy", "Rebel", "Gort Dance", "Smooth Thing", "Sadness", "Drumkit", "Swag", "Berlin Dance", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -28,6 +28,10 @@ static const char *WV_EQ[WV_COUNT] = {
     "bytebeat 'Rebel'",
     "bytebeat 'Gort Dance'",
     "bytebeat 'Smooth Thing'",
+    "bytebeat 'Sadness'",
+    "bytebeat 'Drumkit'",
+    "bytebeat 'Swag'",
+    "bytebeat 'Berlin Dance'",
     "y = sin(distorted_phase(f,t))",
     "y = sin(phi_n)*A_n,  f_n -> f_target",
     "y = sin(phi)*A_body + HPF(noise)*A_snare",
@@ -55,6 +59,10 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0xF884,  // red     — rebel
     0x4DF7,  // teal    — gort dance
     0xCE9F,  // periwinkle—smooth thing
+    0x051F,  // ocean blue — sadness
+    0xFB20,  // burnt orange — drumkit
+    0xFE19,  // gold     — swag
+    0xC0FF,  // neon lavender — berlin dance
     0xB41F,  // violet  — phase distortion
     0xFBE0,  // gold    — kick drum
     0xC618,  // silver  — snare drum
@@ -67,7 +75,8 @@ static const uint8_t *WV_ICONS[WV_COUNT] = {
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
-    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
 };
 
 static const int OSC_Y   = 38;    // starts right after header divider
@@ -327,11 +336,11 @@ static void updateFreqBar(float freq)
 }
 
 // Bytebeat formulas occupy a contiguous block of the WV_* enum
-// (WV_BLUEBERRY..WV_SMOOTH). The picker's top level is just "Waves" vs
+// (WV_BLUEBERRY..WV_BERLIN). The picker's top level is just "Waves" vs
 // "Bytebeats" — picking one opens a second list scoped to just those
 // wave types, keeping the two families fully separate.
 static const int WV_BB_FIRST   = WV_BLUEBERRY;
-static const int WV_BB_COUNT   = WV_SMOOTH - WV_BLUEBERRY + 1;
+static const int WV_BB_COUNT   = WV_BERLIN - WV_BLUEBERRY + 1;
 static const int WV_WAVE_COUNT = WV_COUNT - WV_BB_COUNT;
 
 enum { WLCAT_WAVES = 0, WLCAT_BYTEBEATS, WLCAT_COUNT };
@@ -451,19 +460,22 @@ void runMathSynthMenu()
             amp = 24000.0f;
         } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM ||
                    wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK ||
-                   wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH) {
+                   wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
             // All bytebeat formulas are tuned for bb_step==1 (their native 8kHz
             // tempo); bb_step==2 plays them back at double speed. Default to
-            // normal tempo, only doubling when the joystick is pushed near the top.
+            // normal tempo, only doubling when the joystick is pushed near the top.WV_DRUMKIT
             bb_step = (yRaw >= 0.9f) ? 2 : 1;
-            // "Blippy" was composed for a much faster t-clock than the other
-            // formulas — at the shared 8kHz base its melody/FM/envelope all
-            // come out as slow sub-bass rumble. Run its clock 4x faster.
             if (wv == WV_BLIPPY) bb_step *= 4;
-            // "Rebel" opens with `t>>=2`, an extra built-in /4 on top of the
-            // same fast-clock family as Blippy, so it needs 4x (matching
+            if (wv == WV_TECHNO) bb_step *= 2;
             if (wv == WV_REBEL) bb_step *= 4;
             if (wv == WV_SMOOTH) bb_step *= 4;
+            if (wv == WV_BERLIN) bb_step *= 8;
+            if (wv == WV_NOLIMIT) bb_step *= 4;
+            if (wv == WV_DRUMKIT) bb_step *= 2;
+            if (wv == WV_SADNESS) bb_step *= 8;
+            if (wv == WV_SWAG) bb_step *= 4;
+            
+
             amp = xRaw * 28000.0f;
         } else if (wv == WV_SNARE) {
             // Y controls snare body tone (80–400 Hz), X controls volume
@@ -908,6 +920,182 @@ void runMathSynthMenu()
                     s = (samp8 - 128) * (1.0f / 128.0f);
                     break;
                 }
+                case WV_SADNESS: {
+                    // "sadness"
+                    // r=24576
+                    // a=t=>abs((.875*t*2**(ARR[(t>>14)%32]/12)&255)-128)&255
+                    // (a(t)-.5&224)+(a(t-r)-.5&224)/2
+                    //
+                    // When (t>>14)%32 is negative the array index is out of
+                    // range -> undefined -> ARR[idx]/12 = NaN -> 2**NaN = NaN
+                    // -> .875*t*NaN = NaN -> jsToInt32(NaN)&255 == 0, so the
+                    // inner term collapses to abs(0-128)&255 == 128.
+                    static const double ARR[32] = {
+                        1,5,12,1,5,12,10,8,0,4,10,0,4,10,13,12,
+                        5,8,15,5,8,15,13,12,3,7,13,3,13,12,10,12
+                    };
+                    const int32_t r = 24576;
+
+                    auto aFn = [&](int32_t tArg) -> double {
+                        int32_t idx = (tArg >> 14) % 32;
+                        double  inner;
+                        if (idx < 0) {
+                            inner = 0.0;
+                        } else {
+                            double P = pow(2.0, ARR[idx] / 12.0);
+                            double M = 0.875 * (double)tArg * P;
+                            inner = (double)(jsToInt32(M) & 255);
+                        }
+                        return (double)(jsToInt32(fabs(inner - 128.0)) & 255);
+                    };
+
+                    int32_t t = (int32_t)s_bb_t;
+                    double  result = (double)(jsToInt32(aFn(t) - 0.5) & 224)
+                                    + (double)(jsToInt32(aFn(t - r) - 0.5) & 224) / 2.0;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_DRUMKIT: {
+                    // "drumkit"
+                    // 6*((1152%(t&2047)&99)*(1090584833>>(t>>11)&1)/3
+                    //   +(t%25^t%214&28)*(1440044373>>(t>>11)&1)/8
+                    //   +((t%81^t%104)&64)*(2416971792>>(t>>11)&1)
+                    //  )/(1+(t>>7&15))
+                    //
+                    // t>=0 always. 1152%(t&2047) is NaN when (t&2047)==0
+                    // (mod-by-zero in JS) -> NaN&99==0, special-cased to
+                    // avoid a C++ mod-by-zero trap. Shift counts are masked
+                    // to 5 bits (&31) to match JS's ToUint32(shift)&0x1F and
+                    // avoid UB on >>32. 2416971792 exceeds int32 range, so
+                    // its jsToInt32-wrapped value (-1877995504) is used
+                    // directly for the (sign-extending) arithmetic shift.
+                    int32_t t = (int32_t)s_bb_t;
+
+                    int32_t shiftAmt = (t >> 11) & 31;
+
+                    int32_t maskedT = t & 2047;
+                    int32_t piece1  = (maskedT == 0) ? 0 : ((1152 % maskedT) & 99);
+                    int32_t piece2  = (1090584833 >> shiftAmt) & 1;
+
+                    int32_t pieceB1 = (t % 25) ^ ((t % 214) & 28);
+                    int32_t pieceB2 = (1440044373 >> shiftAmt) & 1;
+
+                    int32_t pieceC1 = ((t % 81) ^ (t % 104)) & 64;
+                    const int32_t CONST3 = -1877995504;  // jsToInt32(2416971792)
+                    int32_t pieceC2 = (CONST3 >> shiftAmt) & 1;
+
+                    double A = (double)piece1  * (double)piece2  / 3.0;
+                    double B = (double)pieceB1 * (double)pieceB2 / 8.0;
+                    double C = (double)pieceC1 * (double)pieceC2;
+
+                    double denom  = 1.0 + (double)((t >> 7) & 15);
+                    double result = 6.0 * (A + B + C) / denom;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_SWAG: {
+                    // "swag"
+                    // T=t*1.2
+                    // sin(8/(T/16384%1+.05))*32
+                    // + (B[(T>>12)%16]*t*.63&127)/2
+                    // + (t*tan([t>>3,t>>1][T>>15&1])&128)/2*(1-T/16384%1)*(T>>14&1)
+                    // + 32
+                    // + ((t*.63*E[T>>16&3]&255)+(T>>8)&256)/4
+                    //
+                    // t is the global counter (always >=0), so T>=0 always —
+                    // no out-of-range array indices to special-case here.
+                    static const double ARR_B[16] = {1,0,2,0,1.2,0,2.4,0,1.35,0,2.7,1.5,0,3,0,1.5};
+                    static const double ARR_E[4]  = {1.0, 0.9, 0.8, 0.75};
+
+                    int32_t t    = (int32_t)s_bb_t;
+                    double  T    = (double)t * 1.2;
+                    int32_t Tint = jsToInt32(T);
+                    double  frac = fmod(T / 16384.0, 1.0);
+
+                    double termA = sin(8.0 / (frac + 0.05)) * 32.0;
+
+                    int32_t idxB  = (Tint >> 12) & 15;   // %16, Tint>=0
+                    double  valB  = ARR_B[idxB] * (double)t * 0.63;
+                    double  termB = (double)(jsToInt32(valB) & 127) / 2.0;
+
+                    int32_t selIdx   = (Tint >> 15) & 1;
+                    int32_t shiftVal = selIdx ? (t >> 1) : (t >> 3);
+                    double  bitC     = (double)(jsToInt32((double)t * tan((double)shiftVal)) & 128) / 2.0;
+                    double  termC    = bitC * (1.0 - frac) * (double)((Tint >> 14) & 1);
+
+                    int32_t idxE = (Tint >> 16) & 3;
+                    int32_t X    = jsToInt32((double)t * 0.63 * ARR_E[idxE]) & 255;
+                    int32_t Y    = Tint >> 8;
+                    double  termE = (double)((X + Y) & 256) / 4.0;
+
+                    double result = termA + termB + termC + 32.0 + termE;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_BERLIN: {
+                    // "berlin dance"
+                    // x=t=>(1.22*t*1.0596**parseInt(ROWS[1&t>>17][3&t>>13],36)&128)
+                    //      *((-t>>8)&31)/16
+                    // (x(t)/4 + x(t-(t>>9&255))/4 + x(t-12288)/8 + x(t-24888)/8
+                    //  + random()*((-t>>7)&63) + 32*sin(3*sqrt(t%16384))) / 3 + 64
+                    //
+                    // ROWS = ['H0CA','H1DC']; col = 3&(t>>13) is always 0..3,
+                    // so (unlike the other lookup formulas) there's no
+                    // out-of-range/undefined case to handle here.
+                    //
+                    // 1.0596**digit only takes 8 distinct (row,col) values, so
+                    // precompute them once instead of calling pow() 4x/sample.
+                    static double POW_RC[2][4];
+                    static bool   powReady = false;
+                    if (!powReady) {
+                        static const int DIGIT[2][4] = {
+                            {17, 0, 12, 10},  // "H0CA"
+                            {17, 1, 13, 12}   // "H1DC"
+                        };
+                        for (int row = 0; row < 2; row++)
+                            for (int col = 0; col < 4; col++)
+                                POW_RC[row][col] = pow(1.0596, (double)DIGIT[row][col]);
+                        powReady = true;
+                    }
+
+                    auto xFn = [&](int32_t tArg) -> double {
+                        int32_t row = (tArg >> 17) & 1;
+                        int32_t col = (tArg >> 13) & 3;
+                        double  M    = 1.22 * (double)tArg * POW_RC[row][col];
+                        int32_t bit1 = jsToInt32(M) & 128;
+                        int32_t negT = -tArg;
+                        int32_t bit2 = (negT >> 8) & 31;
+                        return (double)bit1 * (double)bit2 / 16.0;
+                    };
+
+                    int32_t t = (int32_t)s_bb_t;
+
+                    int32_t off1     = (t >> 9) & 255;
+                    int32_t negTOut  = -t;
+                    int32_t noiseAmt = (negTOut >> 7) & 63;
+
+                    double result = (xFn(t) / 4.0
+                                    + xFn(t - off1) / 4.0
+                                    + xFn(t - 12288) / 8.0
+                                    + xFn(t - 24888) / 8.0
+                                    + bbRandom() * (double)noiseAmt
+                                    + 32.0 * sin(3.0 * sqrt((double)(t % 16384)))
+                                    ) / 3.0 + 64.0;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
                 case WV_PD: {
                     // Phase distortion: compress first half, stretch second half
                     // bend=0.5 → pure sine; bend→0.95 → sawtooth-like harmonic stack
@@ -942,7 +1130,7 @@ void runMathSynthMenu()
         if (++frameCount >= 4) {
             frameCount = 0;
             drawOsc(WV_COL[wv]);
-            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH) {
+            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];

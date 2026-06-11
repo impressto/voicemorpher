@@ -1296,10 +1296,10 @@ void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
 
-  if (!g_has_recording && item != MENU_RECORD && item != MENU_PASSTHROUGH
+  bool isSettingsItem = (item >= MENU_STORAGE_COUNT && item < MENU_SETTINGS_COUNT);
+  if (!g_has_recording && !isSettingsItem && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_VOLUME && item != MENU_FEEDBACK && item != MENU_LIVE_GAIN
-      && item != MENU_MIC_GAIN && item != MENU_MOOD && item != MENU_THEREMIN
+      && item != MENU_MOOD && item != MENU_THEREMIN
       && item != MENU_MATHSYNTH && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
