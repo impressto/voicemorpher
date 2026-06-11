@@ -247,6 +247,34 @@ This means you can set the volume once and then forget about it, focusing both h
 
 ---
 
+## Bytebeat Music (Wave Lab)
+
+From the main menu, **Wave Lab** lets you play with oscillators, drum synths, and a collection of *bytebeats* — tiny one-line math formulas that generate music straight from a counter, with no samples or sequencer involved. Each formula takes a steadily increasing number `t` and turns it into an 8-bit audio byte using only arithmetic and bitwise operators (`+ - * / % & | ^ ~ << >>`). The screen shows the live waveform plus the actual equation generating it.
+
+### Where bytebeats came from
+
+The technique was invented by **viznut** (Ville-Matias Heikkilä), a Finnish programmer and demoscene artist, who introduced it in his 2011 blog post *"Algorithmic symphonies from one line of code — how and why?"*. He found that piping a simple incrementing counter through expressions like `t*(t>>5|t>>8)` produces surprisingly musical, glitchy, rhythmic output — sparking an entire "one-liner music" genre that the demoscene community has been exploring ever since.
+
+### Bytebeat formulas in this project
+
+Wave Lab's **Bytebeats** sub-menu includes formulas written and shared by members of the bytebeat/demoscene community:
+
+| Wave Type | Author |
+|-----------|--------|
+| Blueberry | *(traditional bytebeat, uncredited)* |
+| Techno | *(traditional bytebeat, uncredited)* |
+| Rhythm | Gabriel Miceli |
+| Doom | PortablePorcelain |
+| No Limit | mu6k |
+| Easybeat | PortablePorcelain |
+| Cat-girl | *(traditional bytebeat, uncredited)* |
+| Neurofunk | SthephanShi |
+| Street Surfer | skurk / raer |
+| Crazy Groovy Beats 2 | Gabriel Miceli |
+| Bassline | tejeez |
+
+---
+
 ## How Each Effect Works
 
 ### Pitch Up / Pitch Down
