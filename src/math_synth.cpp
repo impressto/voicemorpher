@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BB, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Bytebeat", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -12,7 +12,10 @@ static const char *WV_EQ[WV_COUNT] = {
     "y = 2*(f*t mod 1) - 1",
     "y = sin(2*pi*f*t + 3*sin(4*pi*f*t))",
     "y[n] = (buf[n] + buf[n+1]) / 2,  N = Fs/f",
-    "(t*(t>>8|t>>13))&255",
+    "t*(((t>>9)^((t>>9)-1)^1)%13)",
+    "(A^A-1280)%11*t | (B^B-2)%13*t  [A=t/10,B=t/640]",
+    "y = drum bytebeat pattern (Gabriel Miceli)",
+    "(tanb|sinb)-sinb  [Doom E1M1, PortablePorcelain]",
     "y = sin(distorted_phase(f,t))",
     "y = sin(phi_n)*A_n,  f_n -> f_target",
     "y = sin(phi)*A_body + HPF(noise)*A_snare",
@@ -24,11 +27,21 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0x07E0,  // green   — sawtooth
     0xF81F,  // magenta — FM
     0xFD20,  // orange  — plucked
-    0xF800,  // red     — bytebeat
+    0x4810,  // indigo  — blueberry
+    0xBFE0,  // lime    — techno
+    0xD8A7,  // crimson — rhythm
+    0xF920,  // fire red— doom
     0xB41F,  // violet  — phase distortion
     0xFBE0,  // gold    — kick drum
     0xC618,  // silver  — snare drum
     0x867D,  // sky blue— hi-hat
+};
+
+// All wave types share the Wave Lab menu icon — picker is text-driven.
+static const uint8_t *WV_ICONS[WV_COUNT] = {
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
 };
 
 static const int OSC_Y   = 38;    // starts right after header divider
@@ -65,7 +78,36 @@ static int     s_ks_pos = 0;
 static int     s_ks_len = 0;
 
 // --- Bytebeat state ----------------------------------------------------------
-static uint32_t s_bb_t = 0;
+static uint32_t s_bb_t    = 0;
+static float    s_bb_frac = 0.0f;          // fractional part of t, for sub-1 step rates
+static const float BB_BASE_HZ = 8000.0f;   // most bytebeat formulas online are tuned for an 8kHz t-clock
+
+// Advances t at bb_step * (8kHz / SAMPLE_RATE) per output sample, so the
+// Y-axis "speed" range matches the pitch/tempo these formulas were composed
+// at, regardless of our 11025 Hz output rate.
+static inline void bbAdvance(uint32_t bb_step)
+{
+    s_bb_frac += (BB_BASE_HZ / SAMPLE_RATE) * (float)bb_step;
+    while (s_bb_frac >= 1.0f) {
+        s_bb_frac -= 1.0f;
+        s_bb_t++;
+    }
+}
+
+// floor(255 / (5 - k) / 2) for k = (t>>17)&3, used by "The Rhythm".
+static const int32_t RHYTHM_Y_MASK[4] = { 25, 31, 42, 63 };
+
+// JS ToInt32: truncate toward zero, then wrap into the int32 range.
+// Needed for bytebeat formulas that feed huge/fractional doubles (e.g. tan())
+// through bitwise operators.
+static inline int32_t jsToInt32(double x)
+{
+    if (!isfinite(x)) return 0;
+    double m = fmod(trunc(x), 4294967296.0);   // mod 2^32
+    if (m < 0.0) m += 4294967296.0;
+    if (m >= 4294967296.0) m -= 4294967296.0;  // guard fp rounding at the boundary
+    return (int32_t)(uint32_t)m;
+}
 
 // --- Phase Distortion state --------------------------------------------------
 static float s_pd_bend = 0.7f;   // 0.5 = pure sine, 0.95 = near-sawtooth
@@ -247,9 +289,16 @@ static void updateFreqBar(float freq)
     tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
     tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
     char tmp[48];
-    snprintf(tmp, sizeof(tmp), "%.0f Hz  |  Y:pitch  X:vol  tap:next  hold:exit", freq);
+    snprintf(tmp, sizeof(tmp), "%.0f Hz  |  Y:pitch  X:vol  tap:next  hold:list", freq);
     tft.setCursor(4, BOT_STA);
     tft.print(tmp);
+}
+
+// Lets the user jump straight to any wave/drum type instead of cycling
+// through them one tap at a time. Returns the picked index, or -1 (X = back).
+static int showWaveLabPicker(int sel)
+{
+    return showIconList(WV_NAMES, WV_ICONS, WV_COUNT, sel);
 }
 
 void runMathSynthMenu()
@@ -262,8 +311,6 @@ void runMathSynthMenu()
     s_bb_t    = 0;
     s_pd_bend = 0.7f;
 
-    drawWaveLabFrame(wv);
-
     const int CHUNK = 256;
     int16_t   buf[CHUNK];   // 512 bytes on stack
     int       frameCount   = 0;
@@ -272,9 +319,32 @@ void runMathSynthMenu()
     unsigned long btnDownMs = 0;
     bool      btnWasUp = true;
     uint32_t  bb_step  = 1;
+    bool      needPicker = true;
 
     while (true)
     {
+        // ── Wave picker: shown on entry and after a hold-to-exit ─────────────────
+        if (needPicker) {
+            int picked = showWaveLabPicker(wv);
+            if (picked < 0) break;   // X = back to main menu
+            wv = picked;
+
+            phase = 0.0f; phaseMod = 0.0f;
+            s_ks_len = 0; ksPluckTimer = 0;
+            s_bb_t = 0; s_bb_frac = 0.0f;
+            frameCount = 0;
+            btnWasUp = true;
+
+            float yRaw0 = 1.0f - analogRead(JOY_Y_PIN) / 4095.0f;
+            float freq0 = 80.0f * powf(11.0f, yRaw0);
+            if (wv == WV_KICK)  triggerKick(freq0);
+            if (wv == WV_SNARE) triggerSnare();
+            if (wv == WV_HAT)   triggerHat();
+
+            drawWaveLabFrame(wv);
+            needPicker = false;
+        }
+
         // ── Controls ──────────────────────────────────────────────────────────
         float yRaw = 1.0f - analogRead(JOY_Y_PIN) / 4095.0f;
         float xRaw = readJoystickXIntensity();
@@ -289,7 +359,13 @@ void runMathSynthMenu()
             // X controls distortion depth (0.5 = sine, 0.95 = near-sawtooth)
             s_pd_bend = 0.5f + xRaw * 0.45f;
             amp = 24000.0f;
-        } else if (wv == WV_BB) {
+        } else if (wv == WV_DOOM) {
+            // Doom's melody is tuned for bb_step==1 (its native 8kHz tempo);
+            // bb_step==2 plays it back at double speed. Default to normal
+            // tempo, only doubling when the joystick is pushed near the top.
+            bb_step = (yRaw >= 0.9f) ? 2 : 1;
+            amp = xRaw * 28000.0f;
+        } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM) {
             // Y controls t increment speed (pitch-ish), X controls volume
             bb_step = (uint32_t)(yRaw * 3.5f + 0.5f);
             if (bb_step < 1) bb_step = 1;
@@ -344,10 +420,73 @@ void runMathSynthMenu()
                     s = v / 32767.0f;
                     break;
                 }
-                case WV_BB: {
-                    // Robotic arpeggio — zero floating-point, bitwise only
-                    uint8_t samp8 = (uint8_t)((s_bb_t * (s_bb_t >> 8 | s_bb_t >> 13)) & 255u);
-                    s_bb_t += bb_step;
+                case WV_BLUEBERRY: {
+                    // Blueberry (Stephen Boak, 2011) — t*(((t>>9)^((t>>9)-1)^1)%13)
+                    uint32_t x = s_bb_t >> 9;
+                    uint8_t samp8 = (uint8_t)((s_bb_t * (((x ^ (x - 1)) ^ 1u) % 13u)) & 255u);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_TECHNO: {
+                    // "Techno" stereo bytebeat — left/right channels mixed to mono.
+                    // L = ((A^(A-1280))%11)*t, A=t/10 ;  R = ((B^(B-2))%13)*t, B=t/640
+                    int32_t t = (int32_t)s_bb_t;
+                    int32_t a = t / 10;
+                    int32_t b = t / 640;
+                    int32_t lMod = (a ^ (a - 1280)) % 11;
+                    int32_t rMod = (b ^ (b - 2)) % 13;
+                    uint8_t l8 = (uint8_t)((lMod * s_bb_t) & 255u);
+                    uint8_t r8 = (uint8_t)((rMod * s_bb_t) & 255u);
+                    uint8_t samp8 = (uint8_t)(((uint16_t)l8 + r8) / 2);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_RHYTHM: {
+                    // The Rhythm (Gabriel Miceli) — a=t-256
+                    // X = (44*((t/256-28)|3) | (t*8 & t>>11 & t>>5) | (t*(a>>3&a>>4&a>>5&64) >> (t/16))) /2 & 127
+                    // Y = (t ^ (t + t/256)) & RHYTHM_Y_MASK[(t>>17)&3]
+                    int32_t t = (int32_t)s_bb_t;
+                    int32_t a = t - 256;
+
+                    int32_t p1 = 44 * ((int32_t)(t / 256.0f - 28.0f) | 3);
+                    int32_t p2 = (t * 8) & (t >> 11) & (t >> 5);
+                    int32_t shiftAmt = (t >> 4) & 31;
+                    int32_t p3 = (t * ((a >> 3) & (a >> 4) & (a >> 5) & 64)) >> shiftAmt;
+                    int32_t x = ((p1 | p2 | p3) / 2) & 127;
+
+                    int32_t e1 = t ^ (t + (t >> 8));
+                    int32_t y = e1 & RHYTHM_Y_MASK[(t >> 17) & 3];
+
+                    uint8_t samp8 = (uint8_t)((x + y) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_DOOM: {
+                    // "Doom E1M1" recreation (PortablePorcelain) — q[] is the melody,
+                    // tan()/sin() of a huge angle produce the noisy/percussive texture.
+                    static const char DRAM_ATTR DOOM_Q[] =
+                        "5 5 JJ5 5 FF5 5 AA5 5 ==5 5 ==??5 5 JJ5 5 FF5 5 AA5 5 ========  "
+                        "5 5 JJ5 5 FF5 5 AA5 5 ==5 5 ==??5 5 JJ5 5 FF5 5 AA5 5 ========  "
+                        "< < XX< < RR< < MM< < II< < IILL< < XX< < RR< < MM< < IIIIIIII  "
+                        "5 5 JJ5 5 FF5 5 AA5 5 ==5 5 ==??5 5 JJ5 5 FF5 5 AA5 5 ========  ";
+                    static const int32_t DOOM_Q_LEN = (int32_t)sizeof(DOOM_Q) - 1;
+
+                    int32_t t    = (int32_t)s_bb_t;
+                    int32_t sIdx = (t / 540) % DOOM_Q_LEN;
+                    int32_t charVal = (int32_t)(uint8_t)DOOM_Q[sIdx] - 32;
+                    double  b = (double)charVal * ((double)t / 8.0);
+
+                    double tanb = tan(b * M_PI / 512.0) * 64.0 - 128.0;
+                    double sinb = sin(b * M_PI / 64.0) * 64.0 - 128.0;
+
+                    int32_t combinedBits = jsToInt32(tanb) | jsToInt32(sinb);
+                    double  combined = (double)combinedBits - sinb;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32(combined) & 255);
+                    bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
                     break;
                 }
@@ -385,39 +524,39 @@ void runMathSynthMenu()
         if (++frameCount >= 4) {
             frameCount = 0;
             drawOsc(WV_COL[wv]);
-            if (wv == WV_BB) {
+            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
-                snprintf(tmp, sizeof(tmp), "t_step=%u  |  Y:speed  X:vol  tap:next  hold:exit", (unsigned)bb_step);
+                snprintf(tmp, sizeof(tmp), "t_step=%u  |  Y:speed  X:vol  tap:next  hold:list", (unsigned)bb_step);
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
             } else if (wv == WV_PD) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
-                snprintf(tmp, sizeof(tmp), "%.0f Hz  depth=%.2f  |  Y:pitch  X:depth  hold:exit", freq, s_pd_bend);
+                snprintf(tmp, sizeof(tmp), "%.0f Hz  depth=%.2f  |  Y:pitch  X:depth  hold:list", freq, s_pd_bend);
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
             } else if (wv == WV_KICK) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
-                snprintf(tmp, sizeof(tmp), "%.0f->%.0fHz | Y:pitch X:vol tap:next hold:exit", freq, KICK_F_TARGET);
+                snprintf(tmp, sizeof(tmp), "%.0f->%.0fHz | Y:pitch X:vol tap:next hold:list", freq, KICK_F_TARGET);
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
             } else if (wv == WV_SNARE) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
-                snprintf(tmp, sizeof(tmp), "body=%.0fHz | Y:tone X:vol tap:next hold:exit", 80.0f + yRaw * 320.0f);
+                snprintf(tmp, sizeof(tmp), "body=%.0fHz | Y:tone X:vol tap:next hold:list", 80.0f + yRaw * 320.0f);
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
             } else if (wv == WV_HAT) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
-                snprintf(tmp, sizeof(tmp), "decay=%s | Y:decay X:vol tap:next hold:exit", (yRaw < 0.5f) ? "open" : "closed");
+                snprintf(tmp, sizeof(tmp), "decay=%s | Y:decay X:vol tap:next hold:list", (yRaw < 0.5f) ? "open" : "closed");
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
             } else {
@@ -425,19 +564,19 @@ void runMathSynthMenu()
             }
         }
 
-        // ── Button: tap = cycle wave, hold ≥500 ms = exit ─────────────────────
+        // ── Button: tap = cycle wave, hold ≥500 ms = back to picker ───────────
         bool btnNow = isJoystickButtonPressed();
         if (btnNow && btnWasUp) {
             btnDownMs = millis();
             btnWasUp  = false;
         } else if (!btnNow && !btnWasUp) {
             if (millis() - btnDownMs >= 500) {
-                break;
+                needPicker = true;
             } else {
                 wv = (wv + 1) % WV_COUNT;
                 phase = 0.0f; phaseMod = 0.0f;
                 s_ks_len = 0; ksPluckTimer = 0;
-                s_bb_t = 0;
+                s_bb_t = 0; s_bb_frac = 0.0f;
                 if (wv == WV_KICK)  triggerKick(freq);
                 if (wv == WV_SNARE) triggerSnare();
                 if (wv == WV_HAT)   triggerHat();
