@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_NOLIMIT, WV_EASYBEAT, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_NOLIMIT, WV_EASYBEAT, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "No Limit", "Easybeat", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "No Limit", "Easybeat", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -18,6 +18,11 @@ static const char *WV_EQ[WV_COUNT] = {
     "(tanb|sinb)-sinb  [Doom E1M1, PortablePorcelain]",
     "sine sweep + bytebeat layers (mu6k 'No Limit')",
     "bytebeat 1fccccf1 (PortablePorcelain)",
+    "17*t|(t>>2)+(t&32768?13:14)*t|t>>3|t>>5",
+    "bytebeat 'Neurofunk' (SthephanShi)",
+    "bytebeat 'Street Surfer' (skurk/raer)",
+    "Crazy Groovy Beats 2 (Gabriel Miceli)",
+    "bytebeat 'Bassline' (tejeez)",
     "y = sin(distorted_phase(f,t))",
     "y = sin(phi_n)*A_n,  f_n -> f_target",
     "y = sin(phi)*A_body + HPF(noise)*A_snare",
@@ -35,6 +40,11 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0xF920,  // fire red— doom
     0xF8B2,  // hot pink— no limit
     0x471A,  // turquoise—easybeat
+    0xFDB8,  // light pink—cat-girl
+    0x04BF,  // electric blue—neurofunk
+    0xFC0E,  // coral   — street surfer
+    0x07EF,  // spring green—groovy beats 2
+    0x6180,  // deep amber—bassline
     0xB41F,  // violet  — phase distortion
     0xFBE0,  // gold    — kick drum
     0xC618,  // silver  — snare drum
@@ -43,6 +53,7 @@ static const uint16_t WV_COL[WV_COUNT] = {
 
 // All wave types share the Wave Lab menu icon — picker is text-driven.
 static const uint8_t *WV_ICONS[WV_COUNT] = {
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
@@ -363,16 +374,13 @@ void runMathSynthMenu()
             // X controls distortion depth (0.5 = sine, 0.95 = near-sawtooth)
             s_pd_bend = 0.5f + xRaw * 0.45f;
             amp = 24000.0f;
-        } else if (wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_EASYBEAT) {
-            // These formulas are tuned for bb_step==1 (their native 8kHz tempo);
-            // bb_step==2 plays them back at double speed. Default to normal
-            // tempo, only doubling when the joystick is pushed near the top.
+        } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM ||
+                   wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK ||
+                   wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE) {
+            // All bytebeat formulas are tuned for bb_step==1 (their native 8kHz
+            // tempo); bb_step==2 plays them back at double speed. Default to
+            // normal tempo, only doubling when the joystick is pushed near the top.
             bb_step = (yRaw >= 0.9f) ? 2 : 1;
-            amp = xRaw * 28000.0f;
-        } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_NOLIMIT) {
-            // Y controls t increment speed (pitch-ish), X controls volume
-            bb_step = (uint32_t)(yRaw * 3.5f + 0.5f);
-            if (bb_step < 1) bb_step = 1;
             amp = xRaw * 28000.0f;
         } else if (wv == WV_SNARE) {
             // Y controls snare body tone (80–400 Hz), X controls volume
@@ -544,6 +552,129 @@ void runMathSynthMenu()
                     s = (samp8 - 128) * (1.0f / 128.0f);
                     break;
                 }
+                case WV_CATGIRL: {
+                    // "Cat-girl. Nya!" (SthephanShi)
+                    // 17*t | ((t>>2) + ((t&32768?13:14)*t)) | (t>>3) | (t>>5)
+                    // All-integer; uint32_t wraparound matches JS ToInt32 for
+                    // non-negative operands, so no float/jsToInt32 needed.
+                    uint32_t t = s_bb_t;
+                    uint32_t mulFactor = (t & 32768u) ? 13u : 14u;
+                    uint32_t result = (17u * t) | ((t >> 2) + (mulFactor * t)) | (t >> 3) | (t >> 5);
+                    uint8_t samp8 = (uint8_t)(result & 0xff);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_NEUROFUNK: {
+                    // "Neurofunk" (SthephanShi)
+                    // t*((t&4096?t%65536<59392?7:t&7:16)+(1&t>>14))
+                    //   >> (3&(-t>>(t&2048?2:10)))
+                    //   | t>>(t&16384?t&4096?10:3:2)
+                    // All-integer, uint32_t throughout: the two shift amounts that
+                    // feed into "& 3" (2 and 10) only ever expose bits below bit 31,
+                    // so logical vs arithmetic shift makes no difference there, and
+                    // the final "& 0xff" similarly hides the sign-bit difference in
+                    // (aVal >> b). No jsToInt32/double needed.
+                    uint32_t t = s_bb_t;
+
+                    uint32_t aTerm1;
+                    if (t & 4096u) {
+                        aTerm1 = ((t % 65536u) < 59392u) ? 7u : (t & 7u);
+                    } else {
+                        aTerm1 = 16u;
+                    }
+                    uint32_t aTerm2 = 1u & (t >> 14);
+                    uint32_t aVal = t * (aTerm1 + aTerm2);
+
+                    uint32_t shiftB = (t & 2048u) ? 2u : 10u;
+                    uint32_t b = 3u & ((-t) >> shiftB);
+
+                    uint32_t shiftC = (t & 16384u) ? ((t & 4096u) ? 10u : 3u) : 2u;
+                    uint32_t c = t >> shiftC;
+
+                    uint8_t samp8 = (uint8_t)(((aVal >> b) | c) & 0xffu);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_STREETSURFER: {
+                    // "Street Surfer" (skurk / raer)
+                    // (t&4096) ? ((t*(t^t%255) | (t>>4)) >> 1)
+                    //          : (t>>3) | ((t&8192) ? t<<2 : t)
+                    // All-integer, uint32_t throughout: t%255 for non-negative t
+                    // matches JS, and the final ">>1" / "&0xff" hide any
+                    // logical-vs-arithmetic shift difference (only bit 31 of the
+                    // shifted value is affected, well above the bits kept by &0xff).
+                    uint32_t t = s_bb_t;
+
+                    uint32_t val;
+                    if (t & 4096u) {
+                        uint32_t x = t ^ (t % 255u);
+                        uint32_t prod = t * x;
+                        val = (prod | (t >> 4)) >> 1;
+                    } else {
+                        uint32_t orVal = (t & 8192u) ? (t << 2) : t;
+                        val = (t >> 3) | orVal;
+                    }
+
+                    uint8_t samp8 = (uint8_t)(val & 0xffu);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_GROOVY2: {
+                    // "Crazy Groovy Beats 2" (Gabriel Miceli)
+                    // d=t>>12&1, h=(t>>9)+4
+                    // (t*t*(t&255)*d/156
+                    //   + (t*(t^15)+t)*((h|t/2048+1&127)-h)/64)
+                    //  & (127-d*((t>>5&127)*2/3+32))
+                    //
+                    // (t/2048+1)&127 floors exactly via t>>11 (2048=2^11), so
+                    // ((h|t/2048+1&127)-h) is an exact non-negative integer
+                    // ("factor"). The big t*t*... and .../64 products still need
+                    // double + jsToInt32 to match JS's ToInt32-on-a-fraction
+                    // behaviour for "&".
+                    uint32_t t = s_bb_t;
+                    uint32_t d = (t >> 12) & 1u;
+                    uint32_t h = (t >> 9) + 4u;
+
+                    uint32_t innerMask = ((t >> 11) + 1u) & 127u;
+                    uint32_t factor = (h | innerMask) - h;
+
+                    double td = (double)t;
+                    double A = td * td * (double)(t & 255u) * (double)d / 156.0;
+                    double B = (td * (double)(t ^ 15u) + td) * (double)factor / 64.0;
+
+                    uint32_t t5 = (t >> 5) & 127u;
+                    double C = 127.0 - (double)d * ((double)t5 * 2.0 / 3.0 + 32.0);
+
+                    int32_t result = jsToInt32(A + B) & jsToInt32(C);
+                    uint8_t samp8 = (uint8_t)(result & 0xff);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_BASSLINE: {
+                    // "Bassline" (tejeez)
+                    // (~t>>2)*((127&t*(7&t>>10))<(245&t*(2+(5&t>>14))))
+                    //
+                    // The two masked products only need their low bits, which
+                    // survive uint32_t wraparound exactly, so plain integer
+                    // math reproduces JS's ToInt32-then-mask here. ~t>>2 is
+                    // computed on a signed int32 so >> sign-extends (arithmetic
+                    // shift), matching JS's >> on a negative number.
+                    uint32_t t = s_bb_t;
+                    uint32_t lhs = (t * (7u & (t >> 10))) & 127u;
+                    uint32_t rhs = (t * (2u + (5u & (t >> 14)))) & 245u;
+
+                    int32_t notT2 = ~(int32_t)t >> 2;
+                    int32_t result = (lhs < rhs) ? notT2 : 0;
+
+                    uint8_t samp8 = (uint8_t)(result & 0xff);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
                 case WV_PD: {
                     // Phase distortion: compress first half, stretch second half
                     // bend=0.5 → pure sine; bend→0.95 → sawtooth-like harmonic stack
@@ -578,7 +709,7 @@ void runMathSynthMenu()
         if (++frameCount >= 4) {
             frameCount = 0;
             drawOsc(WV_COL[wv]);
-            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_NOLIMIT || wv == WV_EASYBEAT) {
+            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
