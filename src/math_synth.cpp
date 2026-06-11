@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_NOLIMIT, WV_EASYBEAT, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "No Limit", "Easybeat", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -16,6 +16,8 @@ static const char *WV_EQ[WV_COUNT] = {
     "(A^A-1280)%11*t | (B^B-2)%13*t  [A=t/10,B=t/640]",
     "y = drum bytebeat pattern (Gabriel Miceli)",
     "(tanb|sinb)-sinb  [Doom E1M1, PortablePorcelain]",
+    "sine sweep + bytebeat layers (mu6k 'No Limit')",
+    "bytebeat 1fccccf1 (PortablePorcelain)",
     "y = sin(distorted_phase(f,t))",
     "y = sin(phi_n)*A_n,  f_n -> f_target",
     "y = sin(phi)*A_body + HPF(noise)*A_snare",
@@ -31,6 +33,8 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0xBFE0,  // lime    — techno
     0xD8A7,  // crimson — rhythm
     0xF920,  // fire red— doom
+    0xF8B2,  // hot pink— no limit
+    0x471A,  // turquoise—easybeat
     0xB41F,  // violet  — phase distortion
     0xFBE0,  // gold    — kick drum
     0xC618,  // silver  — snare drum
@@ -41,7 +45,7 @@ static const uint16_t WV_COL[WV_COUNT] = {
 static const uint8_t *WV_ICONS[WV_COUNT] = {
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
-    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
 };
 
 static const int OSC_Y   = 38;    // starts right after header divider
@@ -359,13 +363,13 @@ void runMathSynthMenu()
             // X controls distortion depth (0.5 = sine, 0.95 = near-sawtooth)
             s_pd_bend = 0.5f + xRaw * 0.45f;
             amp = 24000.0f;
-        } else if (wv == WV_DOOM) {
-            // Doom's melody is tuned for bb_step==1 (its native 8kHz tempo);
-            // bb_step==2 plays it back at double speed. Default to normal
+        } else if (wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_EASYBEAT) {
+            // These formulas are tuned for bb_step==1 (their native 8kHz tempo);
+            // bb_step==2 plays them back at double speed. Default to normal
             // tempo, only doubling when the joystick is pushed near the top.
             bb_step = (yRaw >= 0.9f) ? 2 : 1;
             amp = xRaw * 28000.0f;
-        } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM) {
+        } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_NOLIMIT) {
             // Y controls t increment speed (pitch-ish), X controls volume
             bb_step = (uint32_t)(yRaw * 3.5f + 0.5f);
             if (bb_step < 1) bb_step = 1;
@@ -490,6 +494,56 @@ void runMathSynthMenu()
                     s = (samp8 - 128) * (1.0f / 128.0f);
                     break;
                 }
+                case WV_NOLIMIT: {
+                    // "No Limit" (mu6k) — sine sweep + two derived bytebeat layers.
+                    int32_t t   = (int32_t)s_bb_t;
+                    int32_t t12 = t & 0xfff;
+                    int32_t t16 = t & 0xffff;
+
+                    double mult = 1.0;
+                    if (t16 > 0x7fff) mult += 0.333;
+                    if (t16 > 0xbfff) mult += 0.177;
+
+                    // sin(2000/0) -> sin(inf) -> NaN -> jsToInt32 -> 0, same as JS.
+                    double a = sin(2000.0 / (double)t12) * 127.0 * 0.2;
+
+                    int32_t t2    = (int32_t)((uint32_t)t << 1);
+                    int32_t bByte = jsToInt32((double)t2 * mult) & 0xff;
+                    double  b = (double)bByte * ((double)t12 / (double)0x1fff) * 0.4;
+
+                    int32_t cBits = ((t >> 4) ^ (t >> 6)) | (t >> 10);
+                    int32_t cMix  = cBits | jsToInt32((double)t * 3.0 * mult);
+                    double  c = (double)(cMix & 0xff) * 0.25;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32(a + b + c) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
+                case WV_EASYBEAT: {
+                    // "1fccccf1" / "Easybeat" (PortablePorcelain)
+                    static const double EASYBEAT_POW[4] = { 0.5, 1.0, 2.0, 4.0 };  // 2^((t>>16&3)-1)
+
+                    int32_t t = (int32_t)s_bb_t;
+
+                    int32_t shift1  = (t >> 16) & 3;
+                    double  tScaled = (double)t * EASYBEAT_POW[shift1];
+
+                    int32_t shiftAmt = ((t >> 10) * (t >> 11)) & 31;
+                    int32_t mod8     = (0x1fccccf1 >> shiftAmt) % 8;
+
+                    int32_t a = jsToInt32(tScaled * (double)mod8) | (t >> 3);
+                    int32_t b = (a % 128) - 32;
+
+                    // sin(5000/0) -> sin(inf) -> NaN -> jsToInt32 -> 0, same as JS.
+                    int32_t t12 = t & 4095;
+                    double  c = sin(5000.0 / (double)t12) * 32.0;
+
+                    uint8_t samp8 = (uint8_t)(jsToInt32((double)b + c) & 255);
+                    bbAdvance(bb_step);
+                    s = (samp8 - 128) * (1.0f / 128.0f);
+                    break;
+                }
                 case WV_PD: {
                     // Phase distortion: compress first half, stretch second half
                     // bend=0.5 → pure sine; bend→0.95 → sawtooth-like harmonic stack
@@ -524,7 +578,7 @@ void runMathSynthMenu()
         if (++frameCount >= 4) {
             frameCount = 0;
             drawOsc(WV_COL[wv]);
-            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM) {
+            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_NOLIMIT || wv == WV_EASYBEAT) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
