@@ -1729,6 +1729,7 @@ void runMenuAction(int item)
     }
     case MENU_CALIBRATE_JOY:
       calibrateThereminJoy();
+      calibrateJoystickX();
       break;
     case MENU_WAVELAB_VOL:
     {

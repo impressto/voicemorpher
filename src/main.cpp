@@ -53,6 +53,12 @@ float   g_wl_max_amp     = 28000.0f;
 float   s_wavLabVolLevel = 1.0f;
 int     g_long_rec_secs  = 60;
 
+// Joystick X-axis calibration defaults — equivalent to the old raw
+// value/4095 mapping until calibrateJoystickX() saves real values.
+int     g_jx_min    = 0;
+int     g_jx_center = 2048;
+int     g_jx_max    = 4095;
+
 int     g_th_pitch_src   = 0;
 int     g_th_sound       = 0;
 
@@ -465,6 +471,13 @@ void setup()
   if (g_wl_max_amp > 28000.0f) g_wl_max_amp = 28000.0f;
   s_wavLabVolLevel = (g_wl_max_amp / 28000.0f - 0.1f) / 0.9f;
   Serial.printf("✓ WaveLab max amp loaded: %.0f (%.0f%%)\n", g_wl_max_amp, g_wl_max_amp / 280.0f);
+  g_jx_min    = g_prefs.getInt("jx_min", 0);
+  g_jx_center = g_prefs.getInt("jx_center", 2048);
+  g_jx_max    = g_prefs.getInt("jx_max", 4095);
+  if (g_jx_max - g_jx_min < 500 || g_jx_center <= g_jx_min || g_jx_center >= g_jx_max) {
+    g_jx_min = 0; g_jx_center = 2048; g_jx_max = 4095;
+  }
+  Serial.printf("✓ Joystick X cal loaded: min=%d center=%d max=%d\n", g_jx_min, g_jx_center, g_jx_max);
   g_mood      = g_prefs.getInt("mood", 0);
   g_mood_gain = g_prefs.getFloat("mood_vol", MOOD_MUSIC_GAIN);
   s_moodVolLevel = g_mood_gain / 0.5f;

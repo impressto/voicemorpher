@@ -163,6 +163,12 @@ extern float   g_wl_max_amp;
 extern float   s_wavLabVolLevel;
 extern int     g_long_rec_secs;
 
+// Joystick X-axis calibration (piecewise map: [jx_min,jx_center]->[0,0.5],
+// [jx_center,jx_max]->[0.5,1]), used by readJoystickXIntensity().
+extern int     g_jx_min;
+extern int     g_jx_center;
+extern int     g_jx_max;
+
 extern int      g_th_pitch_src;
 extern int      g_th_sound;
 
@@ -222,6 +228,7 @@ float readJoystickXIntensity();
 bool  isJoystickButtonPressed();
 float readHCSR04cm();
 void  handleJoystickMenu();
+void  calibrateJoystickX();
 
 // recording.cpp
 void saveRecordingAuto();

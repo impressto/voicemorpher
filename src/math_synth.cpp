@@ -116,15 +116,84 @@ static float    s_bb_frac = 0.0f;          // fractional part of t, for sub-1 st
 static const float BB_BASE_HZ = 8000.0f;   // most bytebeat formulas online are tuned for an 8kHz t-clock
 
 // Advances t at bb_step * (8kHz / SAMPLE_RATE) per output sample, so the
-// Y-axis "speed" range matches the pitch/tempo these formulas were composed
-// at, regardless of our 11025 Hz output rate.
-static inline void bbAdvance(uint32_t bb_step)
+// Y-axis "pitch" range matches the tempo these formulas were composed at,
+// regardless of our 11025 Hz output rate. bb_step is a continuous
+// multiplier — values < 1 pitch the formula down, > 1 pitch it up — the
+// fractional accumulator below tracks any positive value correctly.
+static inline void bbAdvance(float bb_step)
 {
-    s_bb_frac += (BB_BASE_HZ / SAMPLE_RATE) * (float)bb_step;
+    s_bb_frac += (BB_BASE_HZ / SAMPLE_RATE) * bb_step;
     while (s_bb_frac >= 1.0f) {
         s_bb_frac -= 1.0f;
         s_bb_t++;
     }
+}
+
+// --- Bytebeat granular pitch shift -------------------------------------------
+// Same overlap-add grain technique as the Pitch Up/Down effects in
+// audio_effects.cpp (fx 7/8), generalized to a continuous ratio. This lets Y
+// shift the *pitch* of the output while bb_step (and therefore the formula's
+// pattern/rhythm timing) stays fixed at its composed tempo. ratio>1 = up,
+// ratio<1 = down, ratio==1 = passthrough (after a fixed grain delay).
+#define PB_BUF      1024
+#define PB_GRAIN    256
+#define PB_FADE_LEN 48
+#define PB_GAP      48
+static int16_t s_pbRing[PB_BUF];
+static int32_t s_pbWPos  = 0;
+static float   s_pbRPos  = -(float)(PB_GRAIN * 2);
+static float   s_pbRPos2 = 0.0f;
+static int     s_pbFade  = 0;
+
+static inline int16_t bbPitchShift(int16_t in, float ratio)
+{
+    s_pbRing[s_pbWPos % PB_BUF] = in;
+    s_pbWPos++;
+
+    float outF = 0.0f;
+    if (s_pbFade > 0) {
+        float alpha = (float)s_pbFade / PB_FADE_LEN;
+        int p0 = ((int)s_pbRPos)  % PB_BUF, p1 = (p0 + 1) % PB_BUF;
+        float pf = s_pbRPos  - floorf(s_pbRPos);
+        float s1 = (1.0f - pf) * s_pbRing[p0] + pf * s_pbRing[p1];
+        int q0 = ((int)s_pbRPos2) % PB_BUF, q1 = (q0 + 1) % PB_BUF;
+        float qf = s_pbRPos2 - floorf(s_pbRPos2);
+        float s2 = (1.0f - qf) * s_pbRing[q0] + qf * s_pbRing[q1];
+        outF = (1.0f - alpha) * s1 + alpha * s2;
+        s_pbRPos2 += ratio;
+        s_pbFade--;
+    } else if (s_pbRPos >= 0.0f) {
+        int i0 = ((int)s_pbRPos) % PB_BUF, i1 = (i0 + 1) % PB_BUF;
+        float fr = s_pbRPos - floorf(s_pbRPos);
+        outF = (1.0f - fr) * s_pbRing[i0] + fr * s_pbRing[i1];
+    }
+
+    s_pbRPos += ratio;
+
+    if (s_pbRPos >= 0.0f) {
+        int gap = s_pbWPos - (int)s_pbRPos;
+        if (gap < PB_GAP) {
+            // read caught up to write (pitch up) — rewind into history
+            s_pbRPos2 = s_pbRPos;
+            s_pbRPos -= (float)PB_GRAIN;
+            s_pbFade  = PB_FADE_LEN;
+        } else if (gap > PB_BUF - PB_GAP * 2) {
+            // read fell behind write (pitch down) — skip ahead
+            s_pbRPos2 = s_pbRPos;
+            s_pbRPos += (float)PB_GRAIN;
+            s_pbFade  = PB_FADE_LEN;
+        }
+        if (s_pbWPos > PB_BUF * 8) {
+            int sub = (s_pbWPos / PB_BUF - 4) * PB_BUF;
+            s_pbWPos  -= sub;
+            s_pbRPos  -= (float)sub;
+            s_pbRPos2 -= (float)sub;
+        }
+    }
+
+    if (outF > 32767.0f) outF = 32767.0f;
+    else if (outF < -32768.0f) outF = -32768.0f;
+    return (int16_t)outF;
 }
 
 // floor(255 / (5 - k) / 2) for k = (t>>17)&3, used by "The Rhythm".
@@ -333,6 +402,31 @@ static void updateFreqBar(float freq)
     tft.print(tmp);
 }
 
+static const char *BB_NOTE_NAMES[12] = {
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+};
+
+// bbSemitone (-12..+12) -> note name, treating 0 as C4 (so the Y axis's
+// full travel spans C3..C5).
+static void bbNoteName(int semitone, char *out, size_t outSize)
+{
+    int idx    = ((semitone % 12) + 12) % 12;
+    int octave = 4 + (int)floorf((float)semitone / 12.0f);
+    snprintf(out, outSize, "%s%d", BB_NOTE_NAMES[idx], octave);
+}
+
+// Top-right badge showing the note the Y axis is currently pitched to.
+static void drawBBNote(int semitone)
+{
+    char note[8];
+    bbNoteName(semitone, note, sizeof(note));
+    tft.fillRoundRect(TFT_W - 56, 6, 48, 24, 4, tft.color565(40, 50, 100));
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(TFT_W - 52, 10);
+    tft.print(note);
+}
+
 // Bytebeat formulas occupy a contiguous block of the WV_* enum
 // (WV_BLUEBERRY..WV_BERLIN). The picker's top level is just "Waves" vs
 // "Bytebeats" — picking one opens a second list scoped to just those
@@ -439,7 +533,8 @@ void runMathSynthMenu()
     unsigned long btnDownMs = 0;
     unsigned long lastTapMs = 0;
     bool      btnWasUp = true;
-    uint32_t  bb_step  = 1;
+    float     bb_step    = 1.0f;
+    int       bbSemitone = 0;   // -12..+12, for the status line
     bool      needPicker = true;
 
     // ── "Loop All" mode: cycles every Bytebeats formula ───────────────────────
@@ -454,6 +549,11 @@ void runMathSynthMenu()
     {
         // ── Wave picker: shown on entry and after a hold-to-exit ─────────────────
         if (needPicker) {
+            // showWaveLabPicker() blocks on input without feeding i2s_write,
+            // so the DMA ring would otherwise loop the last ~186ms of audio
+            // (8 x 256-sample buffers) the whole time the picker is open.
+            i2s_zero_dma_buffer(I2S_TX_PORT);
+
             int picked = showWaveLabPicker(wv);
             if (picked == WV_PICK_BACK) break;   // X = back to main menu
 
@@ -491,6 +591,8 @@ void runMathSynthMenu()
         float freq = 80.0f * powf(11.0f, yRaw);      // 80–880 Hz, logarithmic
         float dphi = 2.0f * (float)M_PI * freq / SAMPLE_RATE;
         float amp;
+        bool  isBB        = false;
+        float pitchRatio  = 1.0f;
 
         float snrDphi   = 0.0f;
         float hatAlpha  = 0.99f;
@@ -502,19 +604,35 @@ void runMathSynthMenu()
         } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM ||
                    wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK ||
                    wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
-            // All bytebeat formulas are tuned for bb_step==1 (their native 8kHz
-            // tempo); bb_step==2 plays them back at double speed. Default to
-            // normal tempo, only doubling when the joystick is pushed near the top.WV_DRUMKIT
-            bb_step = (yRaw >= 0.9f) ? 2 : 1;
-            if (wv == WV_BLIPPY) bb_step *= 4;
-            if (wv == WV_TECHNO) bb_step *= 2;
-            if (wv == WV_REBEL) bb_step *= 4;
-            if (wv == WV_SMOOTH) bb_step *= 4;
-            if (wv == WV_BERLIN) bb_step *= 8;
-            if (wv == WV_DRUMKIT) bb_step *= 2;
-            if (wv == WV_SADNESS) bb_step *= 8;
-            if (wv == WV_SWAG) bb_step *= 4;
-            
+            isBB = true;
+
+            // bb_step stays fixed at each formula's composed tempo (per-wave
+            // exceptions below) so the pattern/rhythm timing never changes. Y
+            // instead drives a granular pitch shift (bbPitchShift) applied to
+            // the output: -6..+6 semitones (1 octave total), quantized to
+            // whole notes, via the equal-tempered ratio 2^(semitone/12)
+            // (yRaw==0.5 -> 0 semitones -> original pitch).
+            float baseStep = 1.0f;
+            if (wv == WV_BLIPPY)  baseStep *= 4.0f;
+            if (wv == WV_TECHNO)  baseStep *= 2.0f;
+            if (wv == WV_REBEL)   baseStep *= 4.0f;
+            if (wv == WV_SMOOTH)  baseStep *= 4.0f;
+            if (wv == WV_BERLIN)  baseStep *= 8.0f;
+            if (wv == WV_DRUMKIT) baseStep *= 2.0f;
+            if (wv == WV_SADNESS) baseStep *= 8.0f;
+            if (wv == WV_SWAG)    baseStep *= 4.0f;
+            bb_step = baseStep;
+
+            // Hysteresis: only re-snap to a new semitone once the stick has
+            // moved past the current note's half-step boundary by HYST, so
+            // small ADC jitter near a boundary doesn't flicker the pitch
+            // between two adjacent notes. bbSemitone persists across chunks.
+            float rawSemitone = yRaw * 12.0f - 6.0f;    // -6..+6, continuous (1 octave total)
+            const float HYST  = 0.15f;
+            if (fabsf(rawSemitone - (float)bbSemitone) > 0.5f + HYST)
+                bbSemitone = (int)roundf(rawSemitone);
+            bbSemitone = constrain(bbSemitone, -6, 6);
+            pitchRatio = powf(2.0f, (float)bbSemitone / 12.0f);
 
             amp = xRaw * 28000.0f;
         } else if (wv == WV_SNARE) {
@@ -1131,6 +1249,7 @@ void runMathSynthMenu()
                     break;
             }
             buf[i] = (int16_t)(s * amp);
+            if (isBB) buf[i] = bbPitchShift(buf[i], pitchRatio);
             s_osc_buf[s_osc_wr & 639] = buf[i];
             s_osc_wr++;
             phase += dphi;
@@ -1154,10 +1273,11 @@ void runMathSynthMenu()
                     int remainSec = (int)((loopAllMs - elapsed) / 1000UL);
                     snprintf(tmp, sizeof(tmp), "Loop All %d/%d  %ds left | click:exit", loopAllRel + 1, WV_BB_COUNT, remainSec);
                 } else {
-                    snprintf(tmp, sizeof(tmp), "t_step=%u  |  Y:speed  X:vol  tap:next  hold:list", (unsigned)bb_step);
+                    snprintf(tmp, sizeof(tmp), "%+d semi (x%.2f) | Y:pitch X:vol tap:next hold:list", bbSemitone, pitchRatio);
                 }
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
+                drawBBNote(bbSemitone);
             } else if (wv == WV_PD) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
