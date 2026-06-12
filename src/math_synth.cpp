@@ -115,6 +115,13 @@ static uint32_t s_bb_t    = 0;
 static float    s_bb_frac = 0.0f;          // fractional part of t, for sub-1 step rates
 static const float BB_BASE_HZ = 8000.0f;   // most bytebeat formulas online are tuned for an 8kHz t-clock
 
+// One-pole low-pass applied to the raw bytebeat sample before amp scaling /
+// pitch shift. Several formulas (e.g. EasyBeat's sin(5000/(t&4095)) term)
+// produce brief bursts of near-impulse, near-Nyquist content that alias into
+// harsh "choppy" clicks at 11025 Hz — this smooths those transients.
+static float s_bbLpf = 0.0f;
+static const float BB_LPF_ALPHA = 0.5f;
+
 // Advances t at bb_step * (8kHz / SAMPLE_RATE) per output sample, so the
 // Y-axis "pitch" range matches the tempo these formulas were composed at,
 // regardless of our 11025 Hz output rate. bb_step is a continuous
@@ -570,7 +577,7 @@ void runMathSynthMenu()
 
             phase = 0.0f; phaseMod = 0.0f;
             s_ks_len = 0; ksPluckTimer = 0;
-            s_bb_t = 0; s_bb_frac = 0.0f;
+            s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f;
             frameCount = 0;
             btnWasUp = true;
             lastTapMs = 0;
@@ -1248,6 +1255,10 @@ void runMathSynthMenu()
                     s = hatNextSample(hatAlpha);
                     break;
             }
+            if (isBB) {
+                s_bbLpf += (s - s_bbLpf) * BB_LPF_ALPHA;
+                s = s_bbLpf;
+            }
             buf[i] = (int16_t)(s * amp);
             if (isBB) buf[i] = bbPitchShift(buf[i], pitchRatio);
             s_osc_buf[s_osc_wr & 639] = buf[i];
@@ -1315,7 +1326,7 @@ void runMathSynthMenu()
         if (loopAll && (millis() - loopAllStartMs) >= loopAllMs) {
             loopAllRel = (loopAllRel + 1) % WV_BB_COUNT;
             wv = WV_BB_FIRST + loopAllRel;
-            s_bb_t = 0; s_bb_frac = 0.0f;
+            s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f;
             loopAllStartMs = millis();
             drawWaveLabFrame(wv);
         }
@@ -1340,7 +1351,7 @@ void runMathSynthMenu()
                 wv = nextWaveInCategory(wv);
                 phase = 0.0f; phaseMod = 0.0f;
                 s_ks_len = 0; ksPluckTimer = 0;
-                s_bb_t = 0; s_bb_frac = 0.0f;
+                s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f;
                 if (wv == WV_KICK)  triggerKick(freq);
                 if (wv == WV_SNARE) triggerSnare();
                 if (wv == WV_HAT)   triggerHat();
