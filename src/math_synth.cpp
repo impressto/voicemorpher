@@ -67,6 +67,40 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0x867D,  // sky blue— hi-hat
 };
 
+// Secondary-trace colors for the bytebeat waves (WV_BLUEBERRY..WV_BERLIN),
+// each chosen to contrast with the corresponding WV_COL entry above. Unused
+// for non-bytebeat waves.
+static const uint16_t WV_AUX_COL[WV_COUNT] = {
+    0x0000,  // sine        (unused)
+    0x0000,  // square      (unused)
+    0x0000,  // sawtooth    (unused)
+    0x0000,  // FM          (unused)
+    0x0000,  // plucked     (unused)
+    0xB7EC,  // blueberry    aux: lime
+    0xFA99,  // techno       aux: hot pink
+    0x3FF4,  // rhythm       aux: spring green
+    0x55BF,  // doom         aux: sky blue
+    0xFC07,  // easybeat     aux: orange
+    0x529F,  // cat-girl     aux: indigo
+    0xFEEA,  // neurofunk    aux: pale yellow
+    0x3EFF,  // street surfer aux: cyan
+    0xFAD9,  // groovy2      aux: magenta
+    0x7F3F,  // bassline     aux: light cyan
+    0xFD0A,  // daft         aux: warm orange
+    0xFC71,  // blippy       aux: salmon
+    0x67F6,  // rebel        aux: green-cyan
+    0xFE8B,  // gort dance   aux: warm gold
+    0xAFEB,  // smooth thing aux: lime green
+    0xFC6C,  // sadness      aux: coral
+    0x6E5F,  // drumkit      aux: sky blue
+    0xB37F,  // swag         aux: violet
+    0xFE47,  // berlin dance aux: warm gold
+    0x0000,  // phase dist  (unused)
+    0x0000,  // kick drum   (unused)
+    0x0000,  // snare drum  (unused)
+    0x0000,  // hi-hat      (unused)
+};
+
 // All wave types share the Wave Lab menu icon — picker is text-driven.
 static const uint8_t *WV_ICONS[WV_COUNT] = {
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
@@ -338,6 +372,16 @@ static inline float hatNextSample(float alpha)
 static int16_t  s_osc_buf[640];
 static uint32_t s_osc_wr = 0;
 
+// Secondary trace: an intermediate sub-expression from the current bytebeat
+// formula (e.g. Berlin's underlying x() pattern before noise/echo mixing),
+// captured alongside the main output so it can be overlaid in a second color.
+static int16_t s_osc_buf2[640];
+
+// Previous redraw's waveform y-coordinates, kept to draw a dimmed "ghost"
+// trail behind the current trace (cheap motion-blur, no input needed).
+static int16_t s_oscPrevY[TFT_W];
+static bool    s_oscPrevValid = false;
+
 static void ks_pluck(float freq)
 {
     int len = (int)((float)SAMPLE_RATE / freq + 0.5f);
@@ -368,10 +412,44 @@ static void drawWaveLabFrame(int wv)
     tft.print(WV_EQ[wv]);
 }
 
+// HSV (h:0-360, s/v:0-1) -> RGB565. Used for the oscilloscope's slow
+// background hue cycle — cheap, called once per ~93ms redraw.
+static uint16_t hsvToRgb565(float h, float s, float v)
+{
+    float c  = v * s;
+    float x  = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+    float m  = v - c;
+    float r1, g1, b1;
+    if (h < 60.0f)       { r1 = c; g1 = x; b1 = 0; }
+    else if (h < 120.0f) { r1 = x; g1 = c; b1 = 0; }
+    else if (h < 180.0f) { r1 = 0; g1 = c; b1 = x; }
+    else if (h < 240.0f) { r1 = 0; g1 = x; b1 = c; }
+    else if (h < 300.0f) { r1 = x; g1 = 0; b1 = c; }
+    else                 { r1 = c; g1 = 0; b1 = x; }
+    return tft.color565((uint8_t)((r1 + m) * 255.0f),
+                         (uint8_t)((g1 + m) * 255.0f),
+                         (uint8_t)((b1 + m) * 255.0f));
+}
+
+// Scales an RGB565 color toward black by `factor` (0..1) — cheap dimming
+// used for the oscilloscope's ghost trail.
+static uint16_t dimColor565(uint16_t col, float factor)
+{
+    uint8_t r = (uint8_t)(((col >> 11) & 0x1F) * factor);
+    uint8_t g = (uint8_t)(((col >> 5)  & 0x3F) * factor);
+    uint8_t b = (uint8_t)(( col        & 0x1F) * factor);
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
 // Draws the oscilloscope from captured audio samples.
 // Zero-crossing sync keeps the display stable even as pitch changes.
 // Amplitude reflects actual volume — flat line when sound is off.
-static void drawOsc(uint16_t col)
+// hue (0-360) tints the background — tied to the current note/pitch by the
+// caller so the color visibly snaps as the Y axis changes note.
+// When hasAux is set, an extra trace from s_osc_buf2 (an intermediate
+// sub-expression of the current formula) is overlaid in auxCol, aligned to
+// the same zero-crossing sync as the main trace.
+static void drawOsc(uint16_t col, float hue, bool hasAux, uint16_t auxCol)
 {
     const int w     = TFT_W - 2;
     const int scale = OSC_H / 2 - 4;  // 82 pixels full scale at amp=28000
@@ -384,9 +462,20 @@ static void drawOsc(uint16_t col)
         if (a <= 0 && b > 0) { start = i; break; }
     }
 
-    tft.fillRect(1, OSC_Y + 1, w, OSC_H - 2, C_BG);
+    // Background tint follows `hue`, kept dark but visible enough to read
+    // against the waveform trace and grid line.
+    tft.fillRect(1, OSC_Y + 1, w, OSC_H - 2, hsvToRgb565(fmodf(hue, 360.0f), 0.55f, 0.2f));
     tft.drawFastHLine(1, OSC_CY, w, tft.color565(25, 35, 70));
     tft.startWrite();
+
+    // Ghost trail: last redraw's line, dimmed, drawn first so the fresh
+    // trace overlays it — a cheap motion-blur that needs no user input.
+    if (s_oscPrevValid) {
+        uint16_t ghostCol = dimColor565(col, 0.35f);
+        for (int x = 0; x < w - 1; x++)
+            tft.drawLine(x + 1, s_oscPrevY[x], x + 2, s_oscPrevY[x + 1], ghostCol);
+    }
+
     for (int x = 0; x < w - 1; x++) {
         int a  = s_osc_buf[(base + start + x)     & 639];
         int b  = s_osc_buf[(base + start + x + 1) & 639];
@@ -394,8 +483,22 @@ static void drawOsc(uint16_t col)
         int y1 = OSC_CY - b * scale / 28000;
         y0 = constrain(y0, OSC_Y + 1, OSC_Y + OSC_H - 2);
         y1 = constrain(y1, OSC_Y + 1, OSC_Y + OSC_H - 2);
+
+        if (hasAux) {
+            int a2  = s_osc_buf2[(base + start + x)     & 639];
+            int b2  = s_osc_buf2[(base + start + x + 1) & 639];
+            int ay0 = OSC_CY - a2 * scale / 28000;
+            int ay1 = OSC_CY - b2 * scale / 28000;
+            ay0 = constrain(ay0, OSC_Y + 1, OSC_Y + OSC_H - 2);
+            ay1 = constrain(ay1, OSC_Y + 1, OSC_Y + OSC_H - 2);
+            tft.drawLine(x + 1, ay0, x + 2, ay1, auxCol);
+        }
+
         tft.drawLine(x + 1, y0, x + 2, y1, col);
+        s_oscPrevY[x] = y0;
+        if (x == w - 2) s_oscPrevY[x + 1] = y1;
     }
+    s_oscPrevValid = true;
     tft.endWrite();
 }
 
@@ -577,7 +680,7 @@ void runMathSynthMenu()
 
             phase = 0.0f; phaseMod = 0.0f;
             s_ks_len = 0; ksPluckTimer = 0;
-            s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f;
+            s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f; s_oscPrevValid = false;
             frameCount = 0;
             btnWasUp = true;
             lastTapMs = 0;
@@ -667,6 +770,9 @@ void runMathSynthMenu()
         // ── Synthesise ────────────────────────────────────────────────────────
         for (int i = 0; i < CHUNK; i++) {
             float s = 0.0f;
+            // Secondary oscilloscope trace value (-1..1-ish), set by formulas
+            // that expose an intermediate sub-expression via s_oscAuxActive.
+            float auxNorm = 0.0f;
             switch (wv) {
                 case WV_SINE:
                     s = sinLUT(phase);
@@ -694,10 +800,16 @@ void runMathSynthMenu()
                 }
                 case WV_BLUEBERRY: {
                     // Blueberry (Stephen Boak, 2011) — t*(((t>>9)^((t>>9)-1)^1)%13)
-                    uint32_t x = s_bb_t >> 9;
-                    uint8_t samp8 = (uint8_t)((s_bb_t * (((x ^ (x - 1)) ^ 1u) % 13u)) & 255u);
+                    uint32_t x    = s_bb_t >> 9;
+                    uint32_t mult = ((x ^ (x - 1)) ^ 1u) % 13u;
+                    uint8_t samp8 = (uint8_t)((s_bb_t * mult) & 255u);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // mult (0..12) is the slow-stepping "chord" selector that
+                    // drives the output's pitch/pattern — it only changes
+                    // every 512 samples (~46ms), so shown as a secondary
+                    // trace it reads as a staircase against the fast tone.
+                    auxNorm = ((float)mult - 6.0f) / 6.0f;
                     break;
                 }
                 case WV_TECHNO: {
@@ -713,6 +825,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(((uint16_t)l8 + r8) / 2);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // l8 is the "left channel" on its own, before being
+                    // averaged with the right channel into the mono output —
+                    // shown as a secondary trace alongside the combined mix.
+                    auxNorm = ((float)l8 - 128.0f) / 128.0f;
                     break;
                 }
                 case WV_RHYTHM: {
@@ -734,6 +850,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)((x + y) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // y is the rhythmic gating term (masked by one of four
+                    // section patterns, RHYTHM_Y_MASK), summed with the
+                    // melodic x term — shown alone, range 0..63.
+                    auxNorm = ((float)y - 31.5f) / 31.5f;
                     break;
                 }
                 case WV_DOOM: {
@@ -760,6 +880,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(combined) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // sinb is one of the two oscillator terms OR'd together
+                    // (with tanb) into Doom's noisy texture — range [-192,-64]
+                    // by construction, shown alone on its own scale.
+                    auxNorm = (float)((sinb + 128.0) / 64.0);
                     break;
                 }
                 case WV_EASYBEAT: {
@@ -784,6 +908,12 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32((double)b + c) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // c is the chirp term whose near-Nyquist spikes near
+                    // t12==0 are what the LPF smooths in the audio output —
+                    // shown unfiltered as a secondary trace so the chirp
+                    // sweep is visible on its own. Range is -32..32; t12==0
+                    // makes c NaN (sin(inf)), guarded to 0 here.
+                    auxNorm = (t12 == 0) ? 0.0f : (float)(c / 32.0);
                     break;
                 }
                 case WV_CATGIRL: {
@@ -793,10 +923,16 @@ void runMathSynthMenu()
                     // non-negative operands, so no float/jsToInt32 needed.
                     uint32_t t = s_bb_t;
                     uint32_t mulFactor = (t & 32768u) ? 13u : 14u;
-                    uint32_t result = (17u * t) | ((t >> 2) + (mulFactor * t)) | (t >> 3) | (t >> 5);
+                    uint32_t midTerm = (t >> 2) + (mulFactor * t);
+                    uint32_t result = (17u * t) | midTerm | (t >> 3) | (t >> 5);
                     uint8_t samp8 = (uint8_t)(result & 0xff);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // midTerm = (t>>2) + mulFactor*t, masked to 8 bits.
+                    // mulFactor flips between 13 and 14 every 32768 samples,
+                    // giving this trace a slow harmonic shift not visible in
+                    // the OR'd-together final output.
+                    auxNorm = ((float)(midTerm & 0xffu) - 128.0f) / 128.0f;
                     break;
                 }
                 case WV_NEUROFUNK: {
@@ -829,6 +965,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(((aVal >> b) | c) & 0xffu);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // c = t>>shiftC, the slow ramp term OR'd into the final
+                    // output — masked to 8 bits it appears as a sawtooth
+                    // whose rate jumps as shiftC changes between 2/3/10.
+                    auxNorm = ((float)(c & 0xffu) - 128.0f) / 128.0f;
                     break;
                 }
                 case WV_STREETSURFER: {
@@ -840,10 +980,10 @@ void runMathSynthMenu()
                     // logical-vs-arithmetic shift difference (only bit 31 of the
                     // shifted value is affected, well above the bits kept by &0xff).
                     uint32_t t = s_bb_t;
+                    uint32_t x = t ^ (t % 255u);
 
                     uint32_t val;
                     if (t & 4096u) {
-                        uint32_t x = t ^ (t % 255u);
                         uint32_t prod = t * x;
                         val = (prod | (t >> 4)) >> 1;
                     } else {
@@ -854,6 +994,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(val & 0xffu);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // x = t ^ (t%255), the term multiplied by t in the
+                    // "&4096" branch — on its own it's a period-255 pattern,
+                    // shown here even during the other branch.
+                    auxNorm = ((float)(x & 0xffu) - 128.0f) / 128.0f;
                     break;
                 }
                 case WV_GROOVY2: {
@@ -886,6 +1030,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(result & 0xff);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // C is the AND-mask applied to (A+B) — 127 when d=0,
+                    // otherwise gated down by t5. Its value (range ~[10,127])
+                    // is what gives the output its rhythmic on/off feel.
+                    auxNorm = (float)(C / 127.0 * 2.0 - 1.0);
                     break;
                 }
                 case WV_BASSLINE: {
@@ -907,6 +1055,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(result & 0xff);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // rhs is the right-hand side of the lhs<rhs comparison
+                    // that gates the output on/off — its own pattern
+                    // (range 0..245) is what drives the bassline's rhythm.
+                    auxNorm = (float)((double)rhs / 245.0 * 2.0 - 1.0);
                     break;
                 }
                 case WV_DAFT: {
@@ -938,6 +1090,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(((uint32_t)lhs | rhs) & 255u);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // lhs = t>>shiftL, the low-order ramp term OR'd with the
+                    // noisy product on the right — masked to 8 bits it's a
+                    // steady sawtooth whose period depends on shiftL (4..7).
+                    auxNorm = ((float)((uint32_t)lhs & 0xffu) - 128.0f) / 128.0f;
                     break;
                 }
                 case WV_BLIPPY: {
@@ -959,6 +1115,11 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)((int32_t)result & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // ampFactor is the output's amplitude envelope — a
+                    // sawtooth from 20 down to 1 every 4000 samples — shown
+                    // on its own so the envelope shape is visible separately
+                    // from the fast oscillator it scales.
+                    auxNorm = (float)((ampFactor - 10.5) / 9.5);
                     break;
                 }
                 case WV_REBEL: {
@@ -998,6 +1159,11 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(sum / 1.5) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // term2 = (t*sin(t>>1)*charVal2) & (-t>>3) & 127 — one of
+                    // rebel's four additive terms, gated by a 16-step lookup
+                    // (charVal2). Shown alone its own melodic contribution is
+                    // visible separately from the noise/ramp terms it's summed with.
+                    auxNorm = ((float)term2 - 63.5f) / 63.5f;
                     break;
                 }
                 case WV_GORT: {
@@ -1027,6 +1193,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(sum / 1.5) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // term2 = t*sin(t>>2)*(1&t>>12), gated on/off every 4096
+                    // samples and masked to 0..127 — gort's middle voice,
+                    // shown alone vs the combined three-term mix.
+                    auxNorm = ((float)term2 - 63.5f) / 63.5f;
                     break;
                 }
                 case WV_SMOOTH: {
@@ -1057,6 +1227,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(sum) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // asdfdsa (range 0..63) is the faster of the two summed
+                    // terms — shown alone vs the smoother edcfcde term that
+                    // dominates the combined "smooth thing" output.
+                    auxNorm = ((float)asdfdsa - 31.5f) / 31.5f;
                     break;
                 }
                 case WV_SADNESS: {
@@ -1088,13 +1262,19 @@ void runMathSynthMenu()
                         return (double)(jsToInt32(fabs(inner - 128.0)) & 255);
                     };
 
-                    int32_t t = (int32_t)s_bb_t;
-                    double  result = (double)(jsToInt32(aFn(t) - 0.5) & 224)
+                    int32_t t  = (int32_t)s_bb_t;
+                    double  aT = aFn(t);
+                    double  result = (double)(jsToInt32(aT - 0.5) & 224)
                                     + (double)(jsToInt32(aFn(t - r) - 0.5) & 224) / 2.0;
 
                     uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // aT = aFn(t), the per-sample tone generator before being
+                    // combined with its own delayed copy (r=24576 samples
+                    // back) — shown alone it reveals the underlying note
+                    // pattern without the echo. Range 0..128.
+                    auxNorm = (float)((aT - 64.0) / 64.0);
                     break;
                 }
                 case WV_DRUMKIT: {
@@ -1136,6 +1316,11 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // A is the first of three additive drum-voice terms
+                    // (piece1, gated by the 1090584833 bit pattern), range
+                    // 0..33 — shown alone as the "kick" component before the
+                    // snare/hat terms B and C are mixed in.
+                    auxNorm = (float)(A / 33.0 * 2.0 - 1.0);
                     break;
                 }
                 case WV_SWAG: {
@@ -1178,6 +1363,10 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    // termA = sin(8/(T/16384%1+.05))*32 — swag's chirp term,
+                    // a smooth sweep that resets every ~13653 samples, shown
+                    // separately from the busy combined output. Range -32..32.
+                    auxNorm = (float)(termA / 32.0);
                     break;
                 }
                 case WV_BERLIN: {
@@ -1222,7 +1411,14 @@ void runMathSynthMenu()
                     int32_t negTOut  = -t;
                     int32_t noiseAmt = (negTOut >> 7) & 63;
 
-                    double result = (xFn(t) / 4.0
+                    // x(t) on its own — the "melodic skeleton" that the rest
+                    // of the formula layers delayed copies, noise and an LFO
+                    // on top of. Range is 0..248 (steps of 8, or 0); shown as
+                    // a secondary oscilloscope trace so its pattern is visible
+                    // separately from the busier combined output.
+                    double xT = xFn(t);
+
+                    double result = (xT / 4.0
                                     + xFn(t - off1) / 4.0
                                     + xFn(t - 12288) / 8.0
                                     + xFn(t - 24888) / 8.0
@@ -1233,6 +1429,7 @@ void runMathSynthMenu()
                     uint8_t samp8 = (uint8_t)(jsToInt32(result) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
+                    auxNorm = (float)((xT - 124.0) / 124.0);
                     break;
                 }
                 case WV_PD: {
@@ -1261,7 +1458,8 @@ void runMathSynthMenu()
             }
             buf[i] = (int16_t)(s * amp);
             if (isBB) buf[i] = bbPitchShift(buf[i], pitchRatio);
-            s_osc_buf[s_osc_wr & 639] = buf[i];
+            s_osc_buf[s_osc_wr & 639]  = buf[i];
+            s_osc_buf2[s_osc_wr & 639] = (int16_t)(auxNorm * amp);
             s_osc_wr++;
             phase += dphi;
             if (phase >= 2.0f * (float)M_PI) phase -= 2.0f * (float)M_PI;
@@ -1273,7 +1471,14 @@ void runMathSynthMenu()
         // ── Oscilloscope refresh every 4 chunks (~93 ms) ──────────────────────
         if (++frameCount >= 4) {
             frameCount = 0;
-            drawOsc(WV_COL[wv]);
+            // Background hue tied to the current pitch: bbSemitone (-6..+6)
+            // for bytebeats, raw Y position for everything else.
+            float bgHue = isBB ? ((float)(bbSemitone + 6) / 12.0f) * 360.0f
+                                : yRaw * 360.0f;
+            // Every bytebeat formula exposes an intermediate sub-expression
+            // (auxNorm, set in its case above) as a second trace, in a color
+            // from WV_AUX_COL chosen to contrast with the main trace.
+            drawOsc(WV_COL[wv], bgHue, isBB, WV_AUX_COL[wv]);
             if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
@@ -1326,7 +1531,7 @@ void runMathSynthMenu()
         if (loopAll && (millis() - loopAllStartMs) >= loopAllMs) {
             loopAllRel = (loopAllRel + 1) % WV_BB_COUNT;
             wv = WV_BB_FIRST + loopAllRel;
-            s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f;
+            s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f; s_oscPrevValid = false;
             loopAllStartMs = millis();
             drawWaveLabFrame(wv);
         }
@@ -1351,7 +1556,7 @@ void runMathSynthMenu()
                 wv = nextWaveInCategory(wv);
                 phase = 0.0f; phaseMod = 0.0f;
                 s_ks_len = 0; ksPluckTimer = 0;
-                s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f;
+                s_bb_t = 0; s_bb_frac = 0.0f; s_bbLpf = 0.0f; s_oscPrevValid = false;
                 if (wv == WV_KICK)  triggerKick(freq);
                 if (wv == WV_SNARE) triggerSnare();
                 if (wv == WV_HAT)   triggerHat();
