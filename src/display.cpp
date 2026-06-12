@@ -74,14 +74,14 @@ void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h, float level)
 // ── Per-item accent colors (R,G,B) — indexed by MenuItem enum value ──────────
 // Covers the root menu (0..MENU_ROOT_COUNT-1) and settings items (MENU_STORAGE_COUNT..MENU_SETTINGS_COUNT-1)
 const uint8_t ITEM_RGB[][3] = {
+    { 40, 180, 255},  // MENU_MATHSYNTH      — electric blue
+    {220, 200,  40},  // MENU_THEREMIN       — yellow
+    {160,  80, 220},  // MENU_PASSTHROUGH    — purple
     {220,  60,  60},  // MENU_RECORD         — red
     { 60, 200,  80},  // MENU_PLAY           — green
-    {160,  80, 220},  // MENU_PASSTHROUGH    — purple
     {220, 140,  30},  // MENU_LONG_REC       — amber
     { 40, 200, 180},  // MENU_LONG_PLAY      — teal
     {220,  80, 180},  // MENU_MOOD           — pink
-    {220, 200,  40},  // MENU_THEREMIN       — yellow
-    { 40, 180, 255},  // MENU_MATHSYNTH      — electric blue
     {140, 140, 160},  // MENU_SETTINGS       — silver
     // Settings sub-menu items
     {220, 160,  40},  // MENU_VOLUME         — gold

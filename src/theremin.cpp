@@ -186,7 +186,7 @@ void thereminMode()
   tft.setCursor(4, TFT_H - 22);
   tft.print(g_th_pitch_src == 1 ? "Sonar: pitch  X: vol" : "Y: pitch   X: vol");
   tft.setCursor(4, TFT_H - 12);
-  tft.print("Btn: free/notes  Hold: exit");
+  tft.print("Btn: free/notes  Hold/2xClick: exit");
 
   float phase    = 0.0f;
   float readPos  = 0.0f;
@@ -200,6 +200,7 @@ void thereminMode()
   float stepVol     = 0.5f;
   unsigned long lastVolMoveMs = 0;
   unsigned long lastDisplayMs = 0;
+  unsigned long lastTapMs     = 0;
 
   const int CHUNK = 64;
   int16_t buf[CHUNK];
@@ -339,12 +340,16 @@ void thereminMode()
     {
       unsigned long pressStart = millis();
       while (isJoystickButtonPressed()) delay(10);
-      if (millis() - pressStart >= 500) {
+      unsigned long now = millis();
+      if (now - pressStart >= 500) {
         break;
+      } else if (now - lastTapMs <= DOUBLE_CLICK_MS) {
+        break;   // double click = exit
       } else {
         th_quantize = !th_quantize;
         g_prefs.putBool("th_quantize", th_quantize);
         lastQuantize = !th_quantize;
+        lastTapMs = now;
       }
     }
   }

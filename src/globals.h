@@ -74,17 +74,21 @@ constexpr int TH_SOUND_COUNT    = 4;
 constexpr int TH_PITCH_SRC_COUNT = 2;
 constexpr int MOOD_COUNT         = 7;
 
+// Two short joystick-button taps within this window = "double click",
+// used as a quick exit gesture from continuous-play modes (Theremin, Wave Lab).
+constexpr unsigned long DOUBLE_CLICK_MS = 400;
+
 // ── MenuItem enum ─────────────────────────────────────────────────────────────
 enum MenuItem
 {
+  MENU_MATHSYNTH,
+  MENU_THEREMIN,
+  MENU_PASSTHROUGH,
   MENU_RECORD,
   MENU_PLAY,
-  MENU_PASSTHROUGH,
   MENU_LONG_REC,
   MENU_LONG_PLAY,
   MENU_MOOD,
-  MENU_THEREMIN,
-  MENU_MATHSYNTH,
   MENU_SETTINGS,
   MENU_ROOT_COUNT,
 

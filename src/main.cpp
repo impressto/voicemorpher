@@ -66,14 +66,14 @@ float    s_moodVolLevel = MOOD_MUSIC_GAIN / 0.5f;
 
 const char *menuLabels[] = {
   // Root menu items
+  "Wave Lab",
+  "Theremin",
+  "Live FX",
   "Record",
   "Play",
-  "Live FX",
   "Stored Rec",
   "Stored Play",
   "Mood Music",
-  "Theremin",
-  "Wave Lab",
   "Settings",
   // Settings sub-menu items
   "Volume",

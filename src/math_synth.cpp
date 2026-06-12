@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_NOLIMIT, WV_EASYBEAT, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_DAFT, WV_BLIPPY, WV_REBEL, WV_GORT, WV_SMOOTH, WV_SADNESS, WV_DRUMKIT, WV_SWAG, WV_BERLIN, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_EASYBEAT, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_DAFT, WV_BLIPPY, WV_REBEL, WV_GORT, WV_SMOOTH, WV_SADNESS, WV_DRUMKIT, WV_SWAG, WV_BERLIN, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "No Limit", "Easybeat", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Daft", "Blippy", "Rebel", "Gort Dance", "Smooth Thing", "Sadness", "Drumkit", "Swag", "Berlin Dance", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "Easybeat", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Daft", "Blippy", "Rebel", "Gort Dance", "Smooth Thing", "Sadness", "Drumkit", "Swag", "Berlin Dance", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -16,7 +16,6 @@ static const char *WV_EQ[WV_COUNT] = {
     "(A^A-1280)%11*t | (B^B-2)%13*t  [A=t/10,B=t/640]",
     "y = drum bytebeat pattern (Gabriel Miceli)",
     "(tanb|sinb)-sinb  [Doom E1M1, PortablePorcelain]",
-    "sine sweep + bytebeat layers (mu6k 'No Limit')",
     "bytebeat 1fccccf1 (PortablePorcelain)",
     "17*t|(t>>2)+(t&32768?13:14)*t|t>>3|t>>5",
     "bytebeat 'Neurofunk' (SthephanShi)",
@@ -47,7 +46,6 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0xBFE0,  // lime    — techno
     0xD8A7,  // crimson — rhythm
     0xF920,  // fire red— doom
-    0xF8B2,  // hot pink— no limit
     0x471A,  // turquoise—easybeat
     0xFDB8,  // light pink—cat-girl
     0x04BF,  // electric blue—neurofunk
@@ -75,7 +73,7 @@ static const uint8_t *WV_ICONS[WV_COUNT] = {
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
-    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
+    ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN,
     ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN, ICON_THEREMIN
 };
 
@@ -343,8 +341,15 @@ static const int WV_BB_FIRST   = WV_BLUEBERRY;
 static const int WV_BB_COUNT   = WV_BERLIN - WV_BLUEBERRY + 1;
 static const int WV_WAVE_COUNT = WV_COUNT - WV_BB_COUNT;
 
-enum { WLCAT_WAVES = 0, WLCAT_BYTEBEATS, WLCAT_COUNT };
-static const char    *WLCAT_NAMES[WLCAT_COUNT] = { "Waves", "Bytebeats" };
+// showWaveLabPicker() return values outside [0, WV_COUNT) — mirrors
+// showIconList()'s -1="back" convention, plus sentinels for the
+// "Long Loop"/"Short Loop" entries at the top of the Bytebeats list.
+static const int WV_PICK_BACK       = -1;
+static const int WV_PICK_LOOP_LONG  = -2;
+static const int WV_PICK_LOOP_SHORT = -3;
+
+enum { WLCAT_BYTEBEATS = 0, WLCAT_WAVES, WLCAT_COUNT };
+static const char    *WLCAT_NAMES[WLCAT_COUNT] = { "Bytebeats", "Waves" };
 static const uint8_t *WLCAT_ICONS[WLCAT_COUNT] = { ICON_THEREMIN, ICON_THEREMIN };
 
 // Moves to the next wave/drum within the same top-level category (Waves vs
@@ -363,7 +368,9 @@ static int nextWaveInCategory(int wv)
 }
 
 // Lets the user jump straight to any wave/drum type instead of cycling
-// through them one tap at a time. Returns the picked index, or -1 (X = back).
+// through them one tap at a time. Returns the picked index, WV_PICK_BACK
+// (X = back to main menu), or WV_PICK_LOOP_LONG/WV_PICK_LOOP_SHORT
+// ("Long Loop"/"Short Loop" picked from the Bytebeats list).
 static int showWaveLabPicker(int wv)
 {
     const char    *waveNames[WV_WAVE_COUNT];
@@ -378,12 +385,24 @@ static int showWaveLabPicker(int wv)
         w++;
     }
 
+    // Bytebeats list, with "Long Loop"/"Short Loop" entries prepended.
+    const char    *bbNames[WV_BB_COUNT + 2];
+    const uint8_t *bbIcons[WV_BB_COUNT + 2];
+    bbNames[0] = "Long Loop";
+    bbIcons[0] = ICON_THEREMIN;
+    bbNames[1] = "Short Loop";
+    bbIcons[1] = ICON_THEREMIN;
+    for (int i = 0; i < WV_BB_COUNT; i++) {
+        bbNames[i + 2] = WV_NAMES[WV_BB_FIRST + i];
+        bbIcons[i + 2] = WV_ICONS[WV_BB_FIRST + i];
+    }
+
     bool isBB  = (wv >= WV_BB_FIRST && wv < WV_BB_FIRST + WV_BB_COUNT);
     int catSel = isBB ? WLCAT_BYTEBEATS : WLCAT_WAVES;
 
     while (true) {
         int cat = showIconList(WLCAT_NAMES, WLCAT_ICONS, WLCAT_COUNT, catSel);
-        if (cat < 0) return -1;   // X = back to main menu
+        if (cat < 0) return WV_PICK_BACK;   // X = back to main menu
 
         if (cat == WLCAT_WAVES) {
             int sel = 0;
@@ -392,10 +411,12 @@ static int showWaveLabPicker(int wv)
             if (picked < 0) continue;  // X = back to category list
             return waveIdx[picked];
         } else {
-            int sel = isBB ? (wv - WV_BB_FIRST) : 0;
-            int picked = showIconList(WV_NAMES + WV_BB_FIRST, WV_ICONS + WV_BB_FIRST, WV_BB_COUNT, sel);
+            int sel = isBB ? (wv - WV_BB_FIRST + 2) : 0;
+            int picked = showIconList(bbNames, bbIcons, WV_BB_COUNT + 2, sel);
             if (picked < 0) continue;  // X = back to category list
-            return WV_BB_FIRST + picked;
+            if (picked == 0) return WV_PICK_LOOP_LONG;
+            if (picked == 1) return WV_PICK_LOOP_SHORT;
+            return WV_BB_FIRST + (picked - 2);
         }
     }
 }
@@ -416,23 +437,43 @@ void runMathSynthMenu()
     int       ksPluckTimer = 0;
     const int KS_REPLUCK   = SAMPLE_RATE * 2 / 5;   // re-pluck every ~0.4 s
     unsigned long btnDownMs = 0;
+    unsigned long lastTapMs = 0;
     bool      btnWasUp = true;
     uint32_t  bb_step  = 1;
     bool      needPicker = true;
+
+    // ── "Loop All" mode: cycles every Bytebeats formula ───────────────────────
+    bool      loopAll        = false;
+    int       loopAllRel     = 0;        // 0..WV_BB_COUNT-1, relative to WV_BB_FIRST
+    unsigned long loopAllStartMs = 0;
+    unsigned long loopAllMs      = 60000UL;   // 60s for "Long Loop", 10s for "Short Loop"
+    static const unsigned long LOOP_LONG_MS  = 60000UL;
+    static const unsigned long LOOP_SHORT_MS = 10000UL;
 
     while (true)
     {
         // ── Wave picker: shown on entry and after a hold-to-exit ─────────────────
         if (needPicker) {
             int picked = showWaveLabPicker(wv);
-            if (picked < 0) break;   // X = back to main menu
-            wv = picked;
+            if (picked == WV_PICK_BACK) break;   // X = back to main menu
+
+            if (picked == WV_PICK_LOOP_LONG || picked == WV_PICK_LOOP_SHORT) {
+                loopAll    = true;
+                loopAllRel = 0;
+                loopAllMs  = (picked == WV_PICK_LOOP_LONG) ? LOOP_LONG_MS : LOOP_SHORT_MS;
+                wv = WV_BB_FIRST + loopAllRel;
+                loopAllStartMs = millis();
+            } else {
+                loopAll = false;
+                wv = picked;
+            }
 
             phase = 0.0f; phaseMod = 0.0f;
             s_ks_len = 0; ksPluckTimer = 0;
             s_bb_t = 0; s_bb_frac = 0.0f;
             frameCount = 0;
             btnWasUp = true;
+            lastTapMs = 0;
 
             float yRaw0 = 1.0f - analogRead(JOY_Y_PIN) / 4095.0f;
             float freq0 = 80.0f * powf(11.0f, yRaw0);
@@ -459,7 +500,7 @@ void runMathSynthMenu()
             s_pd_bend = 0.5f + xRaw * 0.45f;
             amp = 24000.0f;
         } else if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM ||
-                   wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK ||
+                   wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK ||
                    wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
             // All bytebeat formulas are tuned for bb_step==1 (their native 8kHz
             // tempo); bb_step==2 plays them back at double speed. Default to
@@ -470,7 +511,6 @@ void runMathSynthMenu()
             if (wv == WV_REBEL) bb_step *= 4;
             if (wv == WV_SMOOTH) bb_step *= 4;
             if (wv == WV_BERLIN) bb_step *= 8;
-            if (wv == WV_NOLIMIT) bb_step *= 4;
             if (wv == WV_DRUMKIT) bb_step *= 2;
             if (wv == WV_SADNESS) bb_step *= 8;
             if (wv == WV_SWAG) bb_step *= 4;
@@ -593,32 +633,6 @@ void runMathSynthMenu()
                     double  combined = (double)combinedBits - sinb;
 
                     uint8_t samp8 = (uint8_t)(jsToInt32(combined) & 255);
-                    bbAdvance(bb_step);
-                    s = (samp8 - 128) * (1.0f / 128.0f);
-                    break;
-                }
-                case WV_NOLIMIT: {
-                    // "No Limit" (mu6k) — sine sweep + two derived bytebeat layers.
-                    int32_t t   = (int32_t)s_bb_t;
-                    int32_t t12 = t & 0xfff;
-                    int32_t t16 = t & 0xffff;
-
-                    double mult = 1.0;
-                    if (t16 > 0x7fff) mult += 0.333;
-                    if (t16 > 0xbfff) mult += 0.177;
-
-                    // sin(2000/0) -> sin(inf) -> NaN -> jsToInt32 -> 0, same as JS.
-                    double a = sin(2000.0 / (double)t12) * 127.0 * 0.2;
-
-                    int32_t t2    = (int32_t)((uint32_t)t << 1);
-                    int32_t bByte = jsToInt32((double)t2 * mult) & 0xff;
-                    double  b = (double)bByte * ((double)t12 / (double)0x1fff) * 0.4;
-
-                    int32_t cBits = ((t >> 4) ^ (t >> 6)) | (t >> 10);
-                    int32_t cMix  = cBits | jsToInt32((double)t * 3.0 * mult);
-                    double  c = (double)(cMix & 0xff) * 0.25;
-
-                    uint8_t samp8 = (uint8_t)(jsToInt32(a + b + c) & 255);
                     bbAdvance(bb_step);
                     s = (samp8 - 128) * (1.0f / 128.0f);
                     break;
@@ -1130,11 +1144,18 @@ void runMathSynthMenu()
         if (++frameCount >= 4) {
             frameCount = 0;
             drawOsc(WV_COL[wv]);
-            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_NOLIMIT || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
+            if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
                 char tmp[48];
-                snprintf(tmp, sizeof(tmp), "t_step=%u  |  Y:speed  X:vol  tap:next  hold:list", (unsigned)bb_step);
+                if (loopAll) {
+                    unsigned long elapsed = millis() - loopAllStartMs;
+                    if (elapsed > loopAllMs) elapsed = loopAllMs;
+                    int remainSec = (int)((loopAllMs - elapsed) / 1000UL);
+                    snprintf(tmp, sizeof(tmp), "Loop All %d/%d  %ds left | click:exit", loopAllRel + 1, WV_BB_COUNT, remainSec);
+                } else {
+                    snprintf(tmp, sizeof(tmp), "t_step=%u  |  Y:speed  X:vol  tap:next  hold:list", (unsigned)bb_step);
+                }
                 tft.setCursor(4, BOT_STA);
                 tft.print(tmp);
             } else if (wv == WV_PD) {
@@ -1170,14 +1191,31 @@ void runMathSynthMenu()
             }
         }
 
-        // ── Button: tap = cycle wave, hold ≥500 ms = back to picker ───────────
+        // ── Loop All: advance to next bytebeat after the loop duration ────────
+        if (loopAll && (millis() - loopAllStartMs) >= loopAllMs) {
+            loopAllRel = (loopAllRel + 1) % WV_BB_COUNT;
+            wv = WV_BB_FIRST + loopAllRel;
+            s_bb_t = 0; s_bb_frac = 0.0f;
+            loopAllStartMs = millis();
+            drawWaveLabFrame(wv);
+        }
+
+        // ── Button: tap = cycle wave, hold/double-click = back to picker ──────
         bool btnNow = isJoystickButtonPressed();
-        if (btnNow && btnWasUp) {
+        if (loopAll) {
+            if (btnNow) {
+                loopAll    = false;
+                needPicker = true;
+            }
+        } else if (btnNow && btnWasUp) {
             btnDownMs = millis();
             btnWasUp  = false;
         } else if (!btnNow && !btnWasUp) {
-            if (millis() - btnDownMs >= 500) {
+            unsigned long now = millis();
+            if (now - btnDownMs >= 500) {
                 needPicker = true;
+            } else if (now - lastTapMs <= DOUBLE_CLICK_MS) {
+                needPicker = true;   // double click = back to picker
             } else {
                 wv = nextWaveInCategory(wv);
                 phase = 0.0f; phaseMod = 0.0f;
@@ -1187,6 +1225,7 @@ void runMathSynthMenu()
                 if (wv == WV_SNARE) triggerSnare();
                 if (wv == WV_HAT)   triggerHat();
                 drawWaveLabFrame(wv);
+                lastTapMs = now;
             }
             btnWasUp = true;
         }
