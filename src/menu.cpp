@@ -1292,6 +1292,114 @@ void runMoodMenu()
   }
 }
 
+void runWifiSettingsMenu()
+{
+  static const char    *items[] = { "Edit SSID", "Edit Password", "Reconnect" };
+  static const uint8_t *icons[]  = { ICON_WIFI, ICON_WIFI, ICON_WIFI };
+  const int COUNT = 3;
+  int sel = 0;
+  unsigned long lastMoveMs = 0;
+  while (isJoystickButtonPressed()) delay(10);
+
+  int prevSel = -1;
+
+  while (true)
+  {
+    if (sel != prevSel)
+    {
+      prevSel = sel;
+      tft.fillScreen(C_BG);
+      tft.setTextSize(2);
+
+      for (int i = 0; i < COUNT; ++i)
+      {
+        int16_t y = i * ITEM_H;
+        if (i == sel)
+        {
+          fillGradH(0, y, TFT_W, ITEM_H - 1, 0, 130, 190, 0, 55, 120);
+          tft.fillRect(0, y, 4, ITEM_H - 1, TFT_CYAN);
+          tft.setTextColor(TFT_WHITE);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, TFT_WHITE);
+        }
+        else
+        {
+          uint16_t rc = (i & 1) ? tft.color565(12, 15, 38) : C_BG;
+          tft.fillRect(0, y, TFT_W, ITEM_H - 1, rc);
+          tft.setTextColor(0xDEFB);
+          tft.drawBitmap(6, y + 5, icons[i], 16, 16, 0xDEFB);
+        }
+        tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(20, 25, 55));
+        tft.setCursor(28, y + 5);
+        tft.print(items[i]);
+      }
+
+      char hint1[40], hint2[40];
+      if (g_wifi_connected)
+        snprintf(hint1, sizeof(hint1), "Connected: %s", g_wifi_ssid);
+      else
+        snprintf(hint1, sizeof(hint1), "Not connected: %s", g_wifi_ssid);
+      snprintf(hint2, sizeof(hint2), "IP: %s   < X:back",
+               g_wifi_connected ? g_wifi_ip.c_str() : "-");
+      drawHints(hint1, hint2);
+    }
+
+    int y = readJoystickAxis(JOY_Y_PIN);
+    int x = readJoystickAxis(JOY_X_PIN);
+    unsigned long now = millis();
+
+    if ((y != 0 || x < 0) && now - lastMoveMs > 200)
+    {
+      if (x < 0) return;
+      sel = (sel + (y < 0 ? -1 : 1) + COUNT) % COUNT;
+      lastMoveMs = now;
+    }
+
+    if (isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      switch (sel)
+      {
+        case 0: // Edit SSID
+        {
+          char tmp[33];
+          strncpy(tmp, g_wifi_ssid, sizeof(tmp) - 1);
+          tmp[sizeof(tmp) - 1] = '\0';
+          if (showTextKeyboard("Edit SSID", tmp, sizeof(tmp), false))
+          {
+            strncpy(g_wifi_ssid, tmp, sizeof(g_wifi_ssid) - 1);
+            g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
+            g_prefs.putString("wifi_ssid", g_wifi_ssid);
+          }
+          break;
+        }
+        case 1: // Edit Password
+        {
+          char tmp[64];
+          strncpy(tmp, g_wifi_pass, sizeof(tmp) - 1);
+          tmp[sizeof(tmp) - 1] = '\0';
+          if (showTextKeyboard("Edit Password", tmp, sizeof(tmp), true))
+          {
+            strncpy(g_wifi_pass, tmp, sizeof(g_wifi_pass) - 1);
+            g_wifi_pass[sizeof(g_wifi_pass) - 1] = '\0';
+            g_prefs.putString("wifi_pass", g_wifi_pass);
+          }
+          break;
+        }
+        case 2: // Reconnect
+          drawStatus("Connecting...", g_wifi_ssid);
+          if (reconnectWiFi(g_wifi_ssid, g_wifi_pass, WIFI_CONNECT_TIMEOUT_MS))
+            drawStatus("Connected!", g_wifi_ip.c_str());
+          else
+            drawStatus("Connect failed", "Check SSID/password");
+          delay(1500);
+          break;
+      }
+      prevSel = -1;
+    }
+    delay(10);
+  }
+}
+
 void runMenuAction(int item)
 {
   while (isJoystickButtonPressed()) delay(10);
@@ -1746,6 +1854,9 @@ void runMenuAction(int item)
       }
       break;
     }
+    case MENU_WIFI:
+      runWifiSettingsMenu();
+      break;
     case MENU_MOOD:
       runMoodMenu();
       break;

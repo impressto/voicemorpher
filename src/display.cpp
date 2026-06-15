@@ -91,6 +91,7 @@ const uint8_t ITEM_RGB[][3] = {
     { 80, 160, 220},  // MENU_MIC_GAIN       — sky blue
     { 60, 200, 200},  // MENU_CALIBRATE_JOY  — teal
     {160,  80, 220},  // MENU_WAVELAB_VOL    — violet
+    {  0, 180, 255},  // MENU_WIFI           — sky blue
 };
 
 // ── Main menu ────────────────────────────────────────────────────────────────

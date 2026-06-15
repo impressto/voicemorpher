@@ -322,6 +322,26 @@ static const uint8_t ICON_STORAGE[] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+// Nested signal arcs over a dot = WiFi Settings icon
+static const uint8_t ICON_WIFI[] PROGMEM = {
+  0x00, 0x00,  //  0
+  0x00, 0x00,  //  1
+  0x3F, 0xFC,  //  2: outer arc top    (cols 2-13)
+  0xC0, 0x03,  //  3: outer arc sides  (cols 0-1, 14-15)
+  0x00, 0x00,  //  4
+  0x00, 0x00,  //  5
+  0x0F, 0xF0,  //  6: mid arc top      (cols 4-11)
+  0x30, 0x0C,  //  7: mid arc sides    (cols 2-3, 12-13)
+  0x00, 0x00,  //  8
+  0x00, 0x00,  //  9
+  0x03, 0xC0,  // 10: inner arc top    (cols 6-9)
+  0x0C, 0x30,  // 11: inner arc sides  (cols 4-5, 10-11)
+  0x00, 0x00,  // 12
+  0x01, 0x80,  // 13: dot              (cols 7-8)
+  0x01, 0x80,  // 14: dot
+  0x00, 0x00,  // 15
+};
+
 static const uint8_t* const MENU_ICONS[] PROGMEM = {
   // Root menu items (indices 0-6)
   ICON_THEREMIN,    // MENU_MATHSYNTH
@@ -341,6 +361,7 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_MIC_SENS,    // MENU_MIC_GAIN
   ICON_JOYCAL,      // MENU_CALIBRATE_JOY
   ICON_VOLUME,      // MENU_WAVELAB_VOL
+  ICON_WIFI,        // MENU_WIFI
   // Effects sub-menu items (indices 13+)
   ICON_REVERSE,
   ICON_PITCH,

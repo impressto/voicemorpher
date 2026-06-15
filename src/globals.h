@@ -102,6 +102,7 @@ enum MenuItem
   MENU_MIC_GAIN,
   MENU_CALIBRATE_JOY,
   MENU_WAVELAB_VOL,
+  MENU_WIFI,
   MENU_SETTINGS_COUNT,
 
   MENU_REVERSE = MENU_SETTINGS_COUNT,
@@ -186,6 +187,8 @@ extern int      g_radio_volume;
 extern int      g_radio_station;
 extern bool     g_wifi_connected;
 extern String   g_wifi_ip;
+extern char     g_wifi_ssid[33];   // 32 chars + NUL (WiFi SSID max)
+extern char     g_wifi_pass[64];   // 63 chars + NUL (WPA2-PSK max)
 
 // ── Const array externs ───────────────────────────────────────────────────────
 extern const char *menuLabels[];
@@ -280,11 +283,16 @@ void runThereminMenu();
 
 // wifi_manager.cpp
 bool connectWiFi(uint32_t timeoutMs);
+bool reconnectWiFi(const char *ssid, const char *pass, uint32_t timeoutMs);
+void loadWiFiCredentials();
 bool isWiFiConnected();
 String getWiFiIP();
 
 // radio.cpp
 void runRadioMenu();
+
+// keyboard.cpp
+bool showTextKeyboard(const char *title, char *buf, size_t bufLen, bool isPassword);
 
 // menu.cpp
 int  showPassthroughFxSubMenu();
@@ -293,4 +301,5 @@ int  showSettingsSubMenu();
 int  showPlaySubMenu();
 int  showMoodPickerScreen();
 void runMoodMenu();
+void runWifiSettingsMenu();
 void runMenuAction(int item);

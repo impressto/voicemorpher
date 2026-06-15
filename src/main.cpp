@@ -75,6 +75,8 @@ int      g_radio_volume   = RADIO_DEFAULT_VOLUME;
 int      g_radio_station  = 0;
 bool     g_wifi_connected = false;
 String   g_wifi_ip        = "";
+char     g_wifi_ssid[33]  = "";
+char     g_wifi_pass[64]  = "";
 
 const char *menuLabels[] = {
   // Root menu items
@@ -95,6 +97,7 @@ const char *menuLabels[] = {
   "Mic Gain",
   "Joy Cal",
   "WaveLab Vol",
+  "WiFi",
   // Effects sub-menu items
   "Reverse",
   "Pitch",
@@ -517,6 +520,7 @@ void setup()
   loadMoodTrack(g_mood);
 
   initI2S();
+  loadWiFiCredentials();
   g_wifi_connected = connectWiFi(WIFI_CONNECT_TIMEOUT_MS);
   if (g_wifi_connected) g_wifi_ip = getWiFiIP();
   runStartupDiagnostics();
