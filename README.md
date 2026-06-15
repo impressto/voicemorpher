@@ -79,7 +79,7 @@ Sound is just numbers. Once your voice is stored as a list of numbers, you can r
 |--------------|--------------|---------|
 | VRx (X axis) | GPIO 17 | Adjusts effect levels / theremin volume |
 | VRy (Y axis) | GPIO 20 | Scrolls up and down the main menu / theremin pitch |
-| SW (Button) | GPIO 35 | Selects the highlighted menu item |
+| SW (Button) | GPIO 48 | Selects the highlighted menu item |
 | VCC | 3.3V | Power |
 | GND | GND | Ground |
 

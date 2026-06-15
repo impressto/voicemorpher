@@ -38,7 +38,7 @@ using namespace fs;
 // Joystick pins
 #define JOY_X_PIN           17
 #define JOY_Y_PIN           20
-#define JOY_BTN_PIN         35
+#define JOY_BTN_PIN         48
 #define JOY_LOW_THRESHOLD  1200
 #define JOY_HIGH_THRESHOLD 2800
 
