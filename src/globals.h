@@ -190,6 +190,10 @@ extern String   g_wifi_ip;
 extern char     g_wifi_ssid[33];   // 32 chars + NUL (WiFi SSID max)
 extern char     g_wifi_pass[64];   // 63 chars + NUL (WPA2-PSK max)
 
+extern int      g_alarm_hour;      // 0-23
+extern int      g_alarm_min;       // 0-59
+extern bool     g_alarm_enabled;
+
 // ── Const array externs ───────────────────────────────────────────────────────
 extern const char *menuLabels[];
 // Per-item accent RGB — indexed by MenuItem enum (covers root + settings range)
@@ -289,10 +293,15 @@ bool isWiFiConnected();
 String getWiFiIP();
 
 // radio.cpp
-void runRadioMenu();
+void runRadioMenu(bool autoStart = false);
 
 // keyboard.cpp
 bool showTextKeyboard(const char *title, char *buf, size_t bufLen, bool isPassword);
+
+// alarm.cpp
+void setupTimeSync();
+void checkAlarmClock();
+void runAlarmClockMenu();
 
 // menu.cpp
 int  showPassthroughFxSubMenu();

@@ -45,13 +45,25 @@ void audio_showstreamtitle(const char *info)
 
 // ===== Web Radio menu =====
 
+// Station list plus a trailing synthetic "Alarm Clock" entry (index
+// STATION_COUNT) that opens runAlarmClockMenu() instead of playing a stream.
 static int showStationList(int &sel)
 {
-  static const uint8_t *icons[] = {
-    ICON_RADIO, ICON_RADIO, ICON_RADIO, ICON_RADIO,
-    ICON_RADIO, ICON_RADIO, ICON_RADIO, ICON_RADIO,
-  };
-  return showIconList(STATION_NAMES, icons, (int)STATION_COUNT, sel);
+  static const char    *labels[STATION_COUNT + 1];
+  static const uint8_t *icons[STATION_COUNT + 1];
+  static bool initDone = false;
+  if (!initDone)
+  {
+    for (size_t i = 0; i < STATION_COUNT; ++i)
+    {
+      labels[i] = STATION_NAMES[i];
+      icons[i]  = ICON_RADIO;
+    }
+    labels[STATION_COUNT] = "Alarm Clock";
+    icons[STATION_COUNT]  = ICON_ALARM;
+    initDone = true;
+  }
+  return showIconList(labels, icons, (int)STATION_COUNT + 1, sel);
 }
 
 static void drawNowPlayingScreen(int volume)
@@ -74,7 +86,7 @@ static void drawNowPlayingScreen(int volume)
   drawHints("X: volume", "Hold button: station list");
 }
 
-void runRadioMenu()
+void runRadioMenu(bool autoStart)
 {
   while (isJoystickButtonPressed()) delay(10);
 
@@ -105,12 +117,20 @@ void runRadioMenu()
     audio->setVolume((uint8_t)g_radio_volume);
 
     int sel = g_radio_station;
+    bool first = true;
     while (true)
     {
-      int chosen = showStationList(sel);
+      int chosen = (first && autoStart) ? sel : showStationList(sel);
+      first = false;
+
       if (chosen < 0) {
         audio->stopSong();
         break;
+      }
+
+      if (chosen == (int)STATION_COUNT) {  // "Alarm Clock" entry
+        runAlarmClockMenu();
+        continue;
       }
 
       sel = chosen;

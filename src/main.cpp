@@ -78,6 +78,10 @@ String   g_wifi_ip        = "";
 char     g_wifi_ssid[33]  = "";
 char     g_wifi_pass[64]  = "";
 
+int      g_alarm_hour    = 7;
+int      g_alarm_min     = 0;
+bool     g_alarm_enabled = false;
+
 const char *menuLabels[] = {
   // Root menu items
   "Wave Lab",
@@ -513,6 +517,10 @@ void setup()
   g_radio_station = g_prefs.getInt("rd_station", 0);
   if (g_radio_station < 0 || g_radio_station >= (int)STATION_COUNT) g_radio_station = 0;
   Serial.printf("✓ Radio prefs loaded: station=%d vol=%d\n", g_radio_station, g_radio_volume);
+  g_alarm_hour    = g_prefs.getInt("alarm_hr", 7);
+  g_alarm_min     = g_prefs.getInt("alarm_min", 0);
+  g_alarm_enabled = g_prefs.getBool("alarm_en", false);
+  Serial.printf("✓ Alarm prefs loaded: %02d:%02d %s\n", g_alarm_hour, g_alarm_min, g_alarm_enabled ? "ON" : "OFF");
 
   LittleFS.begin(true);
   if (loadRecordingAuto())
@@ -523,6 +531,7 @@ void setup()
   loadWiFiCredentials();
   g_wifi_connected = connectWiFi(WIFI_CONNECT_TIMEOUT_MS);
   if (g_wifi_connected) g_wifi_ip = getWiFiIP();
+  setupTimeSync();
   runStartupDiagnostics();
 #if PLAY_STARTUP_WAV
   playStartupWav();
@@ -583,6 +592,7 @@ void loop()
     }
   }
 
+  checkAlarmClock();
   handleJoystickMenu();
   delay(10);
 }

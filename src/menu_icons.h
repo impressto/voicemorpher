@@ -342,6 +342,27 @@ static const uint8_t ICON_WIFI[] PROGMEM = {
   0x00, 0x00,  // 15
 };
 
+// Clock face with hands pointing up and right = Alarm Clock icon
+// (used only in radio.cpp's station-list icons, like ICON_RADIO)
+static const uint8_t ICON_ALARM[] PROGMEM = {
+  0x03, 0xC0,  //  0: top of circle           (cols 6-9)
+  0x0C, 0x30,  //  1: circle                  (cols 4-5, 10-11)
+  0x30, 0x0C,  //  2: circle                  (cols 2-3, 12-13)
+  0x40, 0x02,  //  3: circle                  (cols 1, 14)
+  0x81, 0x01,  //  4: circle + minute hand    (cols 0, 7, 15)
+  0x81, 0x01,  //  5: circle + minute hand    (cols 0, 7, 15)
+  0x81, 0x01,  //  6: circle + minute hand    (cols 0, 7, 15)
+  0x81, 0xE1,  //  7: circle + hands (center) (cols 0, 7-10, 15)
+  0x80, 0x01,  //  8: circle                  (cols 0, 15)
+  0x80, 0x01,  //  9: circle                  (cols 0, 15)
+  0x80, 0x01,  // 10: circle                  (cols 0, 15)
+  0x40, 0x02,  // 11: circle                  (cols 1, 14)
+  0x30, 0x0C,  // 12: circle                  (cols 2-3, 12-13)
+  0x0C, 0x30,  // 13: circle                  (cols 4-5, 10-11)
+  0x03, 0xC0,  // 14: bottom of circle        (cols 6-9)
+  0x00, 0x00,  // 15
+};
+
 static const uint8_t* const MENU_ICONS[] PROGMEM = {
   // Root menu items (indices 0-6)
   ICON_THEREMIN,    // MENU_MATHSYNTH

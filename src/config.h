@@ -78,3 +78,15 @@
 #ifndef WIFI_CONNECT_TIMEOUT_MS
 #define WIFI_CONNECT_TIMEOUT_MS 10000
 #endif
+
+// Alarm Clock: local timezone offset for NTP sync (no automatic DST -
+// update this twice a year if your area observes DST).
+#ifndef TZ_OFFSET_SEC
+#define TZ_OFFSET_SEC (-5 * 3600) // UTC-5 (EST)
+#endif
+#ifndef NTP_SERVER1
+#define NTP_SERVER1 "pool.ntp.org"
+#endif
+#ifndef NTP_SERVER2
+#define NTP_SERVER2 "time.nist.gov"
+#endif
