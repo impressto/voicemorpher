@@ -2,7 +2,7 @@
 #pragma once
 #include <Arduino.h>
 static const int KITTEN_LEN = 8512;
-static const DRAM_ATTR int16_t KITTEN_PCM[8512] = {
+static const int16_t KITTEN_PCM[8512] PROGMEM = {
   51,160,168,124,85,-21,-120,-185,-207,-143,-64,65,140,206,189,137,
   64,-45,-131,-172,-158,-105,-11,82,169,227,258,221,131,25,-82,-188,
   -220,-186,-99,53,200,302,343,319,238,46,-136,-283,-367,-330,-164,82,

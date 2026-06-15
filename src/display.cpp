@@ -82,6 +82,7 @@ const uint8_t ITEM_RGB[][3] = {
     {220, 140,  30},  // MENU_LONG_REC       — amber
     { 40, 200, 180},  // MENU_LONG_PLAY      — teal
     {220,  80, 180},  // MENU_MOOD           — pink
+    {  0, 200, 255},  // MENU_RADIO          — cyan
     {140, 140, 160},  // MENU_SETTINGS       — silver
     // Settings sub-menu items
     {220, 160,  40},  // MENU_VOLUME         — gold

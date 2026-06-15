@@ -1,6 +1,7 @@
 #include "globals.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+#include "stations.h"
 
 // ── Global variable definitions ──────────────────────────────────────────────
 
@@ -70,6 +71,11 @@ File     g_mood_file;
 float    g_mood_gain    = MOOD_MUSIC_GAIN;
 float    s_moodVolLevel = MOOD_MUSIC_GAIN / 0.5f;
 
+int      g_radio_volume   = RADIO_DEFAULT_VOLUME;
+int      g_radio_station  = 0;
+bool     g_wifi_connected = false;
+String   g_wifi_ip        = "";
+
 const char *menuLabels[] = {
   // Root menu items
   "Wave Lab",
@@ -80,6 +86,7 @@ const char *menuLabels[] = {
   "Stored Rec",
   "Stored Play",
   "Mood Music",
+  "Web Radio",
   "Settings",
   // Settings sub-menu items
   "Volume",
@@ -299,7 +306,7 @@ static void runStartupDiagnostics()
 {
   // Each item: state 0=fail(red) 1=warn(yellow) 2=ok(green)
   struct Diag { const char *label; uint8_t state; char detail[40]; };
-  Diag items[6];
+  Diag items[7];
   int  n = 0;
 
   // 1. TFT — can't read back (MISO=-1); drawing this screen IS the proof
@@ -348,6 +355,12 @@ static void runStartupDiagnostics()
     if (ok) snprintf(d.detail, sizeof(d.detail), "%ds = %d KB internal DRAM", g_max_record_secs, kb);
     else    snprintf(d.detail, sizeof(d.detail), "ALLOC FAILED"); }
 
+  // 7. WiFi — connected at boot for Web Radio; non-fatal if unavailable
+  { auto &d = items[n++]; d.label = "WiFi";
+    d.state = g_wifi_connected ? 2 : 1;
+    if (g_wifi_connected) snprintf(d.detail, sizeof(d.detail), "connected, IP=%s", g_wifi_ip.c_str());
+    else                  snprintf(d.detail, sizeof(d.detail), "not connected (radio disabled)"); }
+
   // ── Serial output ────────────────────────────────────────────────────────
   Serial.println("\n=== STARTUP DIAGNOSTICS ===");
   bool anyFail = false;
@@ -369,7 +382,7 @@ static void runStartupDiagnostics()
   static const uint16_t STATE_COL[3] = { TFT_RED, TFT_YELLOW, 0x07E0 }; // red/yellow/green
 
   const int START_Y  = 42;
-  const int ITEM_H_D = 28;
+  const int ITEM_H_D = 25;
   for (int i = 0; i < n; i++) {
     int y = START_Y + i * ITEM_H_D;
     tft.fillCircle(12, y + 11, 7, STATE_COL[items[i].state]);
@@ -483,6 +496,12 @@ void setup()
   s_moodVolLevel = g_mood_gain / 0.5f;
   if (s_moodVolLevel > 1.0f) s_moodVolLevel = 1.0f;
   Serial.printf("✓ Mood loaded: %d (%s), gain=%.2f\n", g_mood, MOOD_NAMES[g_mood], g_mood_gain);
+  g_radio_volume  = g_prefs.getInt("rd_vol", RADIO_DEFAULT_VOLUME);
+  if (g_radio_volume < RADIO_VOLUME_MIN) g_radio_volume = RADIO_VOLUME_MIN;
+  if (g_radio_volume > RADIO_VOLUME_MAX) g_radio_volume = RADIO_VOLUME_MAX;
+  g_radio_station = g_prefs.getInt("rd_station", 0);
+  if (g_radio_station < 0 || g_radio_station >= (int)STATION_COUNT) g_radio_station = 0;
+  Serial.printf("✓ Radio prefs loaded: station=%d vol=%d\n", g_radio_station, g_radio_volume);
 
   LittleFS.begin(true);
   if (loadRecordingAuto())
@@ -490,6 +509,8 @@ void setup()
   loadMoodTrack(g_mood);
 
   initI2S();
+  g_wifi_connected = connectWiFi(WIFI_CONNECT_TIMEOUT_MS);
+  if (g_wifi_connected) g_wifi_ip = getWiFiIP();
   runStartupDiagnostics();
 #if PLAY_STARTUP_WAV
   playStartupWav();

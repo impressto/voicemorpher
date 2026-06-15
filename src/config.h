@@ -61,3 +61,20 @@
 #ifndef TH_SONAR_MAX_CM
 #define TH_SONAR_MAX_CM 30.0f
 #endif
+
+// Web Radio: ESP32-audioI2S volume range (0-21) and default level.
+#ifndef RADIO_VOLUME_MIN
+#define RADIO_VOLUME_MIN 0
+#endif
+#ifndef RADIO_VOLUME_MAX
+#define RADIO_VOLUME_MAX 21
+#endif
+#ifndef RADIO_DEFAULT_VOLUME
+#define RADIO_DEFAULT_VOLUME 8
+#endif
+
+// WiFi connect timeout during boot (ms). If this elapses without connecting,
+// the radio turns off and Web Radio mode reports "WiFi unavailable".
+#ifndef WIFI_CONNECT_TIMEOUT_MS
+#define WIFI_CONNECT_TIMEOUT_MS 10000
+#endif

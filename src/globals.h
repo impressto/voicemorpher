@@ -9,6 +9,7 @@ using namespace fs;
 #include <Preferences.h>
 #include "driver/i2s.h"
 #include "config.h"
+#include "wifi_secrets.h"
 
 // ── Pin definitions ──────────────────────────────────────────────────────────
 // INMP441 (microphone - RX)
@@ -25,7 +26,7 @@ using namespace fs;
 // ST7789V TFT display
 #define TFT_W    320
 #define TFT_H    240
-#define ITEM_H    26
+#define ITEM_H    24
 #define COL_GRAY 0x7BEF
 
 // Waveform display geometry
@@ -89,6 +90,7 @@ enum MenuItem
   MENU_LONG_REC,
   MENU_LONG_PLAY,
   MENU_MOOD,
+  MENU_RADIO,
   MENU_SETTINGS,
   MENU_ROOT_COUNT,
 
@@ -180,6 +182,11 @@ extern File     g_mood_file;
 extern float    g_mood_gain;
 extern float    s_moodVolLevel;
 
+extern int      g_radio_volume;
+extern int      g_radio_station;
+extern bool     g_wifi_connected;
+extern String   g_wifi_ip;
+
 // ── Const array externs ───────────────────────────────────────────────────────
 extern const char *menuLabels[];
 // Per-item accent RGB — indexed by MenuItem enum (covers root + settings range)
@@ -270,6 +277,14 @@ void runMathSynthMenu();
 void calibrateThereminJoy();
 void thereminMode();
 void runThereminMenu();
+
+// wifi_manager.cpp
+bool connectWiFi(uint32_t timeoutMs);
+bool isWiFiConnected();
+String getWiFiIP();
+
+// radio.cpp
+void runRadioMenu();
 
 // menu.cpp
 int  showPassthroughFxSubMenu();

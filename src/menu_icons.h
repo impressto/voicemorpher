@@ -193,6 +193,26 @@ static const uint8_t ICON_MOOD[] PROGMEM = {
   0x00, 0x00,
 };
 
+// Broadcast tower with signal waves = Web Radio icon
+static const uint8_t ICON_RADIO[] PROGMEM = {
+  0x00, 0x00,  // 0
+  0x01, 0x80,  // 1: mast top
+  0x01, 0x80,  // 2: mast
+  0x05, 0xA0,  // 3: waves
+  0x09, 0x90,  // 4: waves
+  0x11, 0x88,  // 5: waves
+  0x01, 0x80,  // 6: mast
+  0x01, 0x80,  // 7: mast
+  0x01, 0x80,  // 8: mast
+  0x01, 0x80,  // 9: mast
+  0x03, 0xC0,  // 10: base
+  0x07, 0xE0,  // 11: base
+  0x0F, 0xF0,  // 12: base
+  0x00, 0x00,  // 13
+  0x00, 0x00,  // 14
+  0x00, 0x00,  // 15
+};
+
 // Microphone body + stand = Mic Gain icon
 static const uint8_t ICON_MIC_SENS[] PROGMEM = {
   0x06, 0x00,  // mic capsule top
@@ -312,6 +332,7 @@ static const uint8_t* const MENU_ICONS[] PROGMEM = {
   ICON_FLASH_REC,   // MENU_LONG_REC
   ICON_FLASH_PLAY,  // MENU_LONG_PLAY
   ICON_MOOD,        // MENU_MOOD
+  ICON_RADIO,       // MENU_RADIO
   ICON_SETTINGS,    // MENU_SETTINGS
   // Settings sub-menu items
   ICON_VOLUME,      // MENU_VOLUME

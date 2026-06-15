@@ -1299,7 +1299,7 @@ void runMenuAction(int item)
   bool isSettingsItem = (item >= MENU_STORAGE_COUNT && item < MENU_SETTINGS_COUNT);
   if (!g_has_recording && !isSettingsItem && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
-      && item != MENU_MOOD && item != MENU_THEREMIN
+      && item != MENU_MOOD && item != MENU_THEREMIN && item != MENU_RADIO
       && item != MENU_MATHSYNTH && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
@@ -1748,6 +1748,10 @@ void runMenuAction(int item)
     }
     case MENU_MOOD:
       runMoodMenu();
+      break;
+    case MENU_RADIO:
+      runRadioMenu();
+      drawMenu();
       break;
     default:
       break;
