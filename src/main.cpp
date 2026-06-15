@@ -306,7 +306,7 @@ static void runStartupDiagnostics()
 {
   // Each item: state 0=fail(red) 1=warn(yellow) 2=ok(green)
   struct Diag { const char *label; uint8_t state; char detail[40]; };
-  Diag items[7];
+  Diag items[8];
   int  n = 0;
 
   // 1. TFT — can't read back (MISO=-1); drawing this screen IS the proof
@@ -361,6 +361,14 @@ static void runStartupDiagnostics()
     if (g_wifi_connected) snprintf(d.detail, sizeof(d.detail), "connected, IP=%s", g_wifi_ip.c_str());
     else                  snprintf(d.detail, sizeof(d.detail), "not connected (radio disabled)"); }
 
+  // 8. Free internal-DRAM heap — headroom check for future RAM-heavy features
+  { auto &d = items[n++]; d.label = "Free Heap (internal)";
+    uint32_t freeNow = ESP.getFreeHeap();
+    uint32_t freeMin = ESP.getMinFreeHeap();
+    d.state = (freeMin > 10240) ? 2 : (freeMin > 2048) ? 1 : 0;
+    snprintf(d.detail, sizeof(d.detail), "%u KB now / %u KB low-water",
+             (unsigned)(freeNow / 1024), (unsigned)(freeMin / 1024)); }
+
   // ── Serial output ────────────────────────────────────────────────────────
   Serial.println("\n=== STARTUP DIAGNOSTICS ===");
   bool anyFail = false;
@@ -382,7 +390,7 @@ static void runStartupDiagnostics()
   static const uint16_t STATE_COL[3] = { TFT_RED, TFT_YELLOW, 0x07E0 }; // red/yellow/green
 
   const int START_Y  = 42;
-  const int ITEM_H_D = 25;
+  const int ITEM_H_D = 22;
   for (int i = 0; i < n; i++) {
     int y = START_Y + i * ITEM_H_D;
     tft.fillCircle(12, y + 11, 7, STATE_COL[items[i].state]);
