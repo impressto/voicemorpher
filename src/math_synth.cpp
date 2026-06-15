@@ -1,10 +1,10 @@
 #include "globals.h"
 #include <math.h>
 
-enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_DOOM, WV_EASYBEAT, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_DAFT, WV_BLIPPY, WV_REBEL, WV_GORT, WV_SMOOTH, WV_SADNESS, WV_DRUMKIT, WV_SWAG, WV_BERLIN, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
+enum { WV_SINE = 0, WV_SQUARE, WV_SAW, WV_FM, WV_KS, WV_DOOM, WV_BLUEBERRY, WV_TECHNO, WV_RHYTHM, WV_CATGIRL, WV_NEUROFUNK, WV_STREETSURFER, WV_GROOVY2, WV_BASSLINE, WV_DAFT, WV_BLIPPY, WV_REBEL, WV_GORT, WV_SMOOTH, WV_SADNESS, WV_SWAG, WV_BERLIN, WV_EASYBEAT, WV_DRUMKIT, WV_PD, WV_KICK, WV_SNARE, WV_HAT, WV_COUNT };
 
 static const char *WV_NAMES[WV_COUNT] = {
-    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Blueberry", "Techno", "Rhythm", "Doom", "Easybeat", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Daft", "Blippy", "Rebel", "Gort Dance", "Smooth Thing", "Sadness", "Drumkit", "Swag", "Berlin Dance", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
+    "Sine", "Square", "Sawtooth", "FM Synth", "Plucked", "Doom", "Blueberry", "Techno", "Rhythm", "Cat-girl", "Neurofunk", "Street Surfer", "Crazy Groovy Beats 2", "Bassline", "Daft", "Blippy", "Rebel", "Gort Dance", "Smooth Thing", "Sadness", "Swag", "Berlin Dance", "Easybeat", "Drumkit", "Phase Dist", "Kick Drum", "Snare Drum", "Hi-Hat"
 };
 static const char *WV_EQ[WV_COUNT] = {
     "y = A * sin(2*pi*f*t)",
@@ -12,11 +12,10 @@ static const char *WV_EQ[WV_COUNT] = {
     "y = 2*(f*t mod 1) - 1",
     "y = sin(2*pi*f*t + 3*sin(4*pi*f*t))",
     "y[n] = (buf[n] + buf[n+1]) / 2,  N = Fs/f",
+    "(tanb|sinb)-sinb  [Doom E1M1, PortablePorcelain]",
     "t*(((t>>9)^((t>>9)-1)^1)%13)",
     "(A^A-1280)%11*t | (B^B-2)%13*t  [A=t/10,B=t/640]",
     "y = drum bytebeat pattern (Gabriel Miceli)",
-    "(tanb|sinb)-sinb  [Doom E1M1, PortablePorcelain]",
-    "bytebeat 1fccccf1 (PortablePorcelain)",
     "17*t|(t>>2)+(t&32768?13:14)*t|t>>3|t>>5",
     "bytebeat 'Neurofunk' (SthephanShi)",
     "bytebeat 'Street Surfer' (skurk/raer)",
@@ -28,9 +27,10 @@ static const char *WV_EQ[WV_COUNT] = {
     "bytebeat 'Gort Dance'",
     "bytebeat 'Smooth Thing'",
     "bytebeat 'Sadness'",
-    "bytebeat 'Drumkit'",
     "bytebeat 'Swag'",
     "bytebeat 'Berlin Dance'",
+    "bytebeat 1fccccf1 (PortablePorcelain)",
+    "bytebeat 'Drumkit'",
     "y = sin(distorted_phase(f,t))",
     "y = sin(phi_n)*A_n,  f_n -> f_target",
     "y = sin(phi)*A_body + HPF(noise)*A_snare",
@@ -42,11 +42,10 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0x07E0,  // green   — sawtooth
     0xF81F,  // magenta — FM
     0xFD20,  // orange  — plucked
+    0xF920,  // fire red— doom
     0x4810,  // indigo  — blueberry
     0xBFE0,  // lime    — techno
     0xD8A7,  // crimson — rhythm
-    0xF920,  // fire red— doom
-    0x471A,  // turquoise—easybeat
     0xFDB8,  // light pink—cat-girl
     0x04BF,  // electric blue—neurofunk
     0xFC0E,  // coral   — street surfer
@@ -58,9 +57,10 @@ static const uint16_t WV_COL[WV_COUNT] = {
     0x4DF7,  // teal    — gort dance
     0xCE9F,  // periwinkle—smooth thing
     0x051F,  // ocean blue — sadness
-    0xFB20,  // burnt orange — drumkit
     0xFE19,  // gold     — swag
     0xC0FF,  // neon lavender — berlin dance
+    0x471A,  // turquoise—easybeat
+    0xFB20,  // burnt orange — drumkit
     0xB41F,  // violet  — phase distortion
     0xFBE0,  // gold    — kick drum
     0xC618,  // silver  — snare drum
@@ -76,11 +76,10 @@ static const uint16_t WV_AUX_COL[WV_COUNT] = {
     0x0000,  // sawtooth    (unused)
     0x0000,  // FM          (unused)
     0x0000,  // plucked     (unused)
+    0x55BF,  // doom         aux: sky blue
     0xB7EC,  // blueberry    aux: lime
     0xFA99,  // techno       aux: hot pink
     0x3FF4,  // rhythm       aux: spring green
-    0x55BF,  // doom         aux: sky blue
-    0xFC07,  // easybeat     aux: orange
     0x529F,  // cat-girl     aux: indigo
     0xFEEA,  // neurofunk    aux: pale yellow
     0x3EFF,  // street surfer aux: cyan
@@ -92,9 +91,10 @@ static const uint16_t WV_AUX_COL[WV_COUNT] = {
     0xFE8B,  // gort dance   aux: warm gold
     0xAFEB,  // smooth thing aux: lime green
     0xFC6C,  // sadness      aux: coral
-    0x6E5F,  // drumkit      aux: sky blue
     0xB37F,  // swag         aux: violet
     0xFE47,  // berlin dance aux: warm gold
+    0xFC07,  // easybeat     aux: orange
+    0x6E5F,  // drumkit      aux: sky blue
     0x0000,  // phase dist  (unused)
     0x0000,  // kick drum   (unused)
     0x0000,  // snare drum  (unused)
@@ -538,11 +538,11 @@ static void drawBBNote(int semitone)
 }
 
 // Bytebeat formulas occupy a contiguous block of the WV_* enum
-// (WV_BLUEBERRY..WV_BERLIN). The picker's top level is just "Waves" vs
+// (WV_DOOM..WV_DRUMKIT). The picker's top level is just "Waves" vs
 // "Bytebeats" — picking one opens a second list scoped to just those
 // wave types, keeping the two families fully separate.
-static const int WV_BB_FIRST   = WV_BLUEBERRY;
-static const int WV_BB_COUNT   = WV_BERLIN - WV_BLUEBERRY + 1;
+static const int WV_BB_FIRST   = WV_DOOM;
+static const int WV_BB_COUNT   = WV_DRUMKIT - WV_DOOM + 1;
 static const int WV_WAVE_COUNT = WV_COUNT - WV_BB_COUNT;
 
 // showWaveLabPicker() return values outside [0, WV_COUNT) — mirrors
@@ -1478,7 +1478,9 @@ void runMathSynthMenu()
             // Every bytebeat formula exposes an intermediate sub-expression
             // (auxNorm, set in its case above) as a second trace, in a color
             // from WV_AUX_COL chosen to contrast with the main trace.
-            drawOsc(WV_COL[wv], bgHue, isBB, WV_AUX_COL[wv]);
+            // Sadness skips the aux trace — the extra per-sample work was
+            // too much for the CPU on top of its already-heavy formula.
+            drawOsc(WV_COL[wv], bgHue, isBB && wv != WV_SADNESS, WV_AUX_COL[wv]);
             if (wv == WV_BLUEBERRY || wv == WV_TECHNO || wv == WV_RHYTHM || wv == WV_DOOM || wv == WV_EASYBEAT || wv == WV_CATGIRL || wv == WV_NEUROFUNK || wv == WV_STREETSURFER || wv == WV_GROOVY2 || wv == WV_BASSLINE || wv == WV_DAFT || wv == WV_BLIPPY || wv == WV_REBEL || wv == WV_GORT || wv == WV_SMOOTH || wv == WV_SADNESS || wv == WV_DRUMKIT || wv == WV_SWAG || wv == WV_BERLIN) {
                 tft.fillRect(0, BOT_STA - 2, TFT_W, TFT_H - (BOT_STA - 2), C_BG);
                 tft.setTextColor(tft.color565(120, 140, 160)); tft.setTextSize(1);
