@@ -8,29 +8,35 @@ void setupTimeSync()
 
 static int s_lastFiredMinuteOfDay = -1;
 
-void checkAlarmClock()
+// Returns true if the alarm fired and the radio was launched.
+bool checkAlarmClock()
 {
-  if (!g_alarm_enabled) return;
+  if (!g_alarm_enabled) return false;
 
   struct tm ti;
-  if (!getLocalTime(&ti, 0)) return;        // non-blocking; false if not synced yet
-  if (ti.tm_year < (2020 - 1900)) return;   // sanity: NTP hasn't synced yet
+  if (!getLocalTime(&ti, 0)) return false;       // non-blocking; false if not synced yet
+  if (ti.tm_year < (2020 - 1900)) return false;  // sanity: NTP hasn't synced yet
 
   int nowMin   = ti.tm_hour * 60 + ti.tm_min;
   int alarmMin = g_alarm_hour * 60 + g_alarm_min;
 
-  if (nowMin == alarmMin && s_lastFiredMinuteOfDay != nowMin)
+  // Fire if within 1 minute past the alarm (handles loop() being blocked in a
+  // submenu when the exact minute hit). Guard by alarmMin so it fires once/day.
+  int minsPast = (nowMin - alarmMin + 1440) % 1440;
+  if (minsPast <= 1 && s_lastFiredMinuteOfDay != alarmMin)
   {
-    s_lastFiredMinuteOfDay = nowMin;
+    s_lastFiredMinuteOfDay = alarmMin;
     if (!isWiFiConnected())
     {
       Serial.println("Alarm fired but WiFi unavailable, skipping");
-      return;
+      return false;
     }
     Serial.println("Alarm fired - starting Web Radio");
     runRadioMenu(true);
     drawMenu();
+    return true;
   }
+  return false;
 }
 
 // ===== Alarm Clock settings screen =====
@@ -152,5 +158,69 @@ void runAlarmClockMenu()
     }
 
     delay(10);
+  }
+}
+
+// ===== Clock screensaver =====
+
+void runClockScreensaver()
+{
+  tft.fillScreen(TFT_BLACK);
+
+  static const char *const DAYS[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+  static const char *const MONTHS[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                        "Jul","Aug","Sep","Oct","Nov","Dec"};
+  int lastMin = -1;
+
+  while (true)
+  {
+    if (checkAlarmClock()) return;  // alarm fired, radio played, exit screensaver
+
+    if (readJoystickAxis(JOY_X_PIN) != 0 ||
+        readJoystickAxis(JOY_Y_PIN) != 0 ||
+        isJoystickButtonPressed())
+    {
+      while (isJoystickButtonPressed()) delay(10);
+      return;
+    }
+
+    struct tm ti;
+    bool synced = getLocalTime(&ti, 0) && ti.tm_year >= (2020 - 1900);
+    int currentMin = synced ? (ti.tm_hour * 60 + ti.tm_min) : -2;
+
+    if (currentMin != lastMin)
+    {
+      lastMin = currentMin;
+      tft.fillScreen(TFT_BLACK);
+
+      if (synced)
+      {
+        // HH:MM — textSize 5 = 30px/char wide, 40px tall; "HH:MM" = 150px wide
+        char timeBuf[6];
+        snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", ti.tm_hour, ti.tm_min);
+        tft.setTextSize(5);
+        tft.setTextColor(TFT_WHITE);
+        tft.setCursor((TFT_W - 150) / 2, 88);
+        tft.print(timeBuf);
+
+        // Day + date — textSize 2 = 12px/char wide, 16px tall
+        char dateBuf[20];
+        snprintf(dateBuf, sizeof(dateBuf), "%s %s %d",
+                 DAYS[ti.tm_wday], MONTHS[ti.tm_mon], ti.tm_mday);
+        tft.setTextSize(2);
+        tft.setTextColor(COL_GRAY);
+        tft.setCursor((TFT_W - (int)strlen(dateBuf) * 12) / 2, 146);
+        tft.print(dateBuf);
+      }
+      else
+      {
+        tft.setTextSize(5);
+        tft.setTextColor(COL_GRAY);
+        tft.setCursor((TFT_W - 150) / 2, 100);
+        tft.print("--:--");
+      }
+    }
+
+    delay(50);
   }
 }

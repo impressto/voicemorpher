@@ -300,8 +300,9 @@ bool showTextKeyboard(const char *title, char *buf, size_t bufLen, bool isPasswo
 
 // alarm.cpp
 void setupTimeSync();
-void checkAlarmClock();
+bool checkAlarmClock();
 void runAlarmClockMenu();
+void runClockScreensaver();
 
 // menu.cpp
 int  showPassthroughFxSubMenu();

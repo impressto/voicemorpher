@@ -592,6 +592,17 @@ void loop()
     }
   }
 
+  static unsigned long s_lastActivityMs = millis();
+  if (readJoystickAxis(JOY_Y_PIN) != 0 || isJoystickButtonPressed())
+    s_lastActivityMs = millis();
+
+  if (millis() - s_lastActivityMs > SCREENSAVER_TIMEOUT_MS)
+  {
+    runClockScreensaver();
+    s_lastActivityMs = millis();
+    drawMenu();
+  }
+
   checkAlarmClock();
   handleJoystickMenu();
   delay(10);

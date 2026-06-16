@@ -79,6 +79,12 @@
 #define WIFI_CONNECT_TIMEOUT_MS 10000
 #endif
 
+// Idle screensaver timeout (ms). After this much time with no joystick
+// activity at the main menu, the clock screensaver activates.
+#ifndef SCREENSAVER_TIMEOUT_MS
+#define SCREENSAVER_TIMEOUT_MS (5UL * 60UL * 1000UL) // 5 minutes
+#endif
+
 // Alarm Clock: local timezone offset for NTP sync (no automatic DST -
 // update this twice a year if your area observes DST).
 #ifndef TZ_OFFSET_SEC
