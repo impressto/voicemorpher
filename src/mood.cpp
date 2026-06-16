@@ -1,7 +1,7 @@
 #include "globals.h"
 
-const char *MOOD_NAMES[] = { "None", "Exciting", "Happy", "Romantica", "Sad", "Powerful", "Scary" };
-const char *MOOD_PATHS[] = { nullptr, "/exciting.wav", "/happy.wav", "/romantica.wav", "/sad.wav", "/powerful.wav", "/scary.wav" };
+const char *MOOD_NAMES[] = { "None", "Exciting", "Happy", "Romantica", "Sad", "Powerful" };
+const char *MOOD_PATHS[] = { nullptr, "/exciting.wav", "/happy.wav", "/romantica.wav", "/sad.wav", "/powerful.wav" };
 
 // Validates the mood WAV and caches its PCM data offset/size for streaming.
 bool loadMoodTrack(int mood)

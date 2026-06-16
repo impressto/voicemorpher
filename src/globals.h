@@ -73,7 +73,7 @@ using namespace fs;
 
 constexpr int TH_SOUND_COUNT    = 4;
 constexpr int TH_PITCH_SRC_COUNT = 2;
-constexpr int MOOD_COUNT         = 7;
+constexpr int MOOD_COUNT         = 6;
 
 // Two short joystick-button taps within this window = "double click",
 // used as a quick exit gesture from continuous-play modes (Theremin, Wave Lab).
@@ -216,6 +216,7 @@ inline int16_t applyPlaybackGain(int16_t sample)
 // ── Forward declarations ──────────────────────────────────────────────────────
 
 // display.cpp
+void drawJpegFromFS(const char *path, int16_t x0 = 0, int16_t y0 = 0);
 void fillGradH(int16_t x, int16_t y, int16_t w, int16_t h,
                uint8_t r1, uint8_t g1, uint8_t b1,
                uint8_t r2, uint8_t g2, uint8_t b2);

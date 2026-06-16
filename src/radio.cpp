@@ -66,23 +66,39 @@ static int showStationList(int &sel)
   return showIconList(labels, icons, (int)STATION_COUNT + 1, sel);
 }
 
+static void drawVolumeBar(int volume)
+{
+  tft.fillRect(0, TFT_H - 78, TFT_W, 40, tft.color565(0, 5, 20));
+  tft.setTextSize(1);
+  tft.setTextColor(COL_GRAY);
+  tft.setCursor(10, TFT_H - 70);
+  tft.print("Volume");
+  float level = (float)(volume - RADIO_VOLUME_MIN) / (float)(RADIO_VOLUME_MAX - RADIO_VOLUME_MIN);
+  drawProgressBar(10, TFT_H - 56, TFT_W - 20, 16, level);
+}
+
 static void drawNowPlayingScreen(int volume)
 {
+  // Try station-specific art, then the generic fallback, then plain background
+  const char *art = (g_radio_station >= 0 && g_radio_station < (int)STATION_COUNT)
+                    ? STATIONS[g_radio_station].art
+                    : nullptr;
+  if (!art) art = "/jazz-small.jpg";
+
   tft.fillScreen(C_BG);
+  if (LittleFS.exists(art))
+    drawJpegFromFS(art, 0, 38);  // 320x160 image sits below the header
+
   drawHeader(g_stationName);
 
+  // Dark strip behind stream title for readability over the image
+  tft.fillRect(0, 38, TFT_W, 22, tft.color565(0, 5, 20));
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE);
   tft.setCursor(10, 44);
   tft.print(g_streamTitle);
 
-  tft.setTextColor(COL_GRAY);
-  tft.setCursor(10, TFT_H - 70);
-  tft.print("Volume");
-
-  float level = (float)(volume - RADIO_VOLUME_MIN) / (float)(RADIO_VOLUME_MAX - RADIO_VOLUME_MIN);
-  drawProgressBar(10, TFT_H - 56, TFT_W - 20, 16, level);
-
+  drawVolumeBar(volume);
   drawHints("X: volume", "Hold button: station list");
 }
 
@@ -170,11 +186,14 @@ void runRadioMenu(bool autoStart)
           if (millis() - pressStart >= 500) break;
         }
 
-        if (strcmp(g_streamTitle, lastTitle) != 0 || g_radio_volume != lastVol) {
+        if (strcmp(g_streamTitle, lastTitle) != 0) {
           strncpy(lastTitle, g_streamTitle, sizeof(lastTitle) - 1);
           lastTitle[sizeof(lastTitle) - 1] = '\0';
           lastVol = g_radio_volume;
-          drawNowPlayingScreen(g_radio_volume);
+          drawNowPlayingScreen(g_radio_volume);  // full redraw for new track title
+        } else if (g_radio_volume != lastVol) {
+          lastVol = g_radio_volume;
+          drawVolumeBar(g_radio_volume);  // bar only, no JPEG redecode
         }
       }
     }

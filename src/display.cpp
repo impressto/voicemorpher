@@ -1,4 +1,26 @@
 #include "globals.h"
+#include <TJpg_Decoder.h>
+
+// ── JPEG drawing ──────────────────────────────────────────────────────────────
+
+static bool jpgTFTOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
+{
+  if (y >= TFT_H) return false;
+  tft.pushImage(x, y, w, h, bitmap);
+  return true;
+}
+
+void drawJpegFromFS(const char *path, int16_t x0, int16_t y0)
+{
+  static bool initDone = false;
+  if (!initDone) {
+    TJpgDec.setJpgScale(1);
+    TJpgDec.setSwapBytes(true);
+    TJpgDec.setCallback(jpgTFTOutput);
+    initDone = true;
+  }
+  TJpgDec.drawFsJpg(x0, y0, path, LittleFS);
+}
 
 // ── Gradient helpers ─────────────────────────────────────────────────────────
 

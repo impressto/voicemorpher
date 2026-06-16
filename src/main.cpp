@@ -214,20 +214,8 @@ static void showColorCheck()
 
 static void showSplash()
 {
-  File f = LittleFS.open("/splash.raw", "r");
-  if (!f) return;
-
-  uint16_t rowBuf[TFT_W];
-  tft.startWrite();
-  tft.setAddrWindow(0, 0, TFT_W, TFT_H);
-  for (int row = 0; row < TFT_H; ++row)
-  {
-    if (f.read((uint8_t *)rowBuf, TFT_W * 2) != TFT_W * 2) break;
-    tft.pushColors(rowBuf, TFT_W);
-    if ((row & 31) == 31) yield();
-  }
-  tft.endWrite();
-  f.close();
+  if (LittleFS.exists("/splash_small.jpg"))
+    drawJpegFromFS("/splash_small.jpg");
 }
 
 static void playStartupWav()
