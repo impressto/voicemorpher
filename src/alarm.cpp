@@ -11,7 +11,7 @@ static int s_lastFiredMinuteOfDay = -1;
 // Returns true if the alarm fired and the radio was launched.
 bool checkAlarmClock()
 {
-  if (!g_alarm_enabled) return false;
+  if (!g_alarm_enabled || !isWiFiConnected()) return false;
 
   struct tm ti;
   if (!getLocalTime(&ti, 0)) return false;       // non-blocking; false if not synced yet
@@ -195,12 +195,12 @@ void runClockScreensaver()
 
       if (synced)
       {
-        // HH:MM — textSize 5 = 30px/char wide, 40px tall; "HH:MM" = 150px wide
+        // HH:MM — textSize 7 = 42px/char wide, 56px tall; "HH:MM" = 210px wide
         char timeBuf[6];
         snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", ti.tm_hour, ti.tm_min);
-        tft.setTextSize(5);
+        tft.setTextSize(7);
         tft.setTextColor(TFT_WHITE);
-        tft.setCursor((TFT_W - 150) / 2, 88);
+        tft.setCursor((TFT_W - 210) / 2, 72);
         tft.print(timeBuf);
 
         // Day + date — textSize 2 = 12px/char wide, 16px tall
@@ -209,14 +209,25 @@ void runClockScreensaver()
                  DAYS[ti.tm_wday], MONTHS[ti.tm_mon], ti.tm_mday);
         tft.setTextSize(2);
         tft.setTextColor(COL_GRAY);
-        tft.setCursor((TFT_W - (int)strlen(dateBuf) * 12) / 2, 146);
+        tft.setCursor((TFT_W - (int)strlen(dateBuf) * 12) / 2, 148);
         tft.print(dateBuf);
+
+        // Alarm indicator at bottom
+        if (g_alarm_enabled)
+        {
+          char alarmBuf[20];
+          snprintf(alarmBuf, sizeof(alarmBuf), "Alarm: %02d:%02d", g_alarm_hour, g_alarm_min);
+          tft.setTextSize(2);
+          tft.setTextColor(TFT_CYAN);
+          tft.setCursor((TFT_W - (int)strlen(alarmBuf) * 12) / 2, 208);
+          tft.print(alarmBuf);
+        }
       }
       else
       {
-        tft.setTextSize(5);
+        tft.setTextSize(7);
         tft.setTextColor(COL_GRAY);
-        tft.setCursor((TFT_W - 150) / 2, 100);
+        tft.setCursor((TFT_W - 210) / 2, 92);
         tft.print("--:--");
       }
     }

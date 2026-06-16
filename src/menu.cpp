@@ -1388,7 +1388,10 @@ void runWifiSettingsMenu()
         case 2: // Reconnect
           drawStatus("Connecting...", g_wifi_ssid);
           if (reconnectWiFi(g_wifi_ssid, g_wifi_pass, WIFI_CONNECT_TIMEOUT_MS))
+          {
+            setupTimeSync();
             drawStatus("Connected!", g_wifi_ip.c_str());
+          }
           else
             drawStatus("Connect failed", "Check SSID/password");
           delay(1500);

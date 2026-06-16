@@ -596,7 +596,7 @@ void loop()
   if (readJoystickAxis(JOY_Y_PIN) != 0 || isJoystickButtonPressed())
     s_lastActivityMs = millis();
 
-  if (millis() - s_lastActivityMs > SCREENSAVER_TIMEOUT_MS)
+  if (isWiFiConnected() && millis() - s_lastActivityMs > SCREENSAVER_TIMEOUT_MS)
   {
     runClockScreensaver();
     s_lastActivityMs = millis();
