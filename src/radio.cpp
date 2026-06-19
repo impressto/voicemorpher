@@ -77,7 +77,7 @@ static void drawVolumeBar(int volume)
   drawProgressBar(10, TFT_H - 56, TFT_W - 20, 16, level);
 }
 
-static void drawNowPlayingScreen(int volume)
+static void drawNowPlayingScreen(int volume, bool alarmMode = false)
 {
   // Try station-specific art, then the generic fallback, then plain background
   const char *art = (g_radio_station >= 0 && g_radio_station < (int)STATION_COUNT)
@@ -99,10 +99,13 @@ static void drawNowPlayingScreen(int volume)
   tft.print(g_streamTitle);
 
   drawVolumeBar(volume);
-  drawHints("X: volume", "Hold button: station list");
+  if (alarmMode)
+    drawHints("X: vol  Y: snooze 5min", "Btn: dismiss alarm");
+  else
+    drawHints("X: volume", "Hold button: station list");
 }
 
-void runRadioMenu(bool autoStart)
+bool runRadioMenu(bool autoStart)
 {
   while (isJoystickButtonPressed()) delay(10);
 
@@ -111,7 +114,7 @@ void runRadioMenu(bool autoStart)
     delay(300);
     while (!isJoystickButtonPressed()) delay(50);
     while ( isJoystickButtonPressed()) delay(50);
-    return;
+    return false;
   }
 
   // record_buffer (215KB, permanently held in internal DRAM) plus WiFi's
@@ -124,6 +127,8 @@ void runRadioMenu(bool autoStart)
 
   // Free I2S_NUM_1 so ESP32-audioI2S can claim it for the stream decoder.
   i2s_driver_uninstall(I2S_TX_PORT);
+
+  bool snooze = false;
 
   {
     // Heap-allocated: Audio's internal decode buffer (~8KB) is too large
@@ -158,7 +163,7 @@ void runRadioMenu(bool autoStart)
       g_streamTitle[0] = '\0';
       audio->connecttohost(STATIONS[sel].url);
 
-      drawNowPlayingScreen(g_radio_volume);
+      drawNowPlayingScreen(g_radio_volume, autoStart);
       char lastTitle[sizeof(g_streamTitle)] = "";
       int  lastVol = g_radio_volume;
       unsigned long lastMoveMs = 0;
@@ -180,22 +185,31 @@ void runRadioMenu(bool autoStart)
           lastMoveMs = now;
         }
 
+        // Alarm mode: joystick Y = snooze
+        if (autoStart && readJoystickAxis(JOY_Y_PIN) != 0) {
+          snooze = true;
+          break;
+        }
+
         if (isJoystickButtonPressed()) {
           unsigned long pressStart = millis();
           while (isJoystickButtonPressed()) delay(10);
-          if (millis() - pressStart >= 500) break;
+          if (autoStart) break;  // any click = dismiss alarm
+          if (millis() - pressStart >= 500) break;  // long press = station list
         }
 
         if (strcmp(g_streamTitle, lastTitle) != 0) {
           strncpy(lastTitle, g_streamTitle, sizeof(lastTitle) - 1);
           lastTitle[sizeof(lastTitle) - 1] = '\0';
           lastVol = g_radio_volume;
-          drawNowPlayingScreen(g_radio_volume);  // full redraw for new track title
+          drawNowPlayingScreen(g_radio_volume, autoStart);
         } else if (g_radio_volume != lastVol) {
           lastVol = g_radio_volume;
-          drawVolumeBar(g_radio_volume);  // bar only, no JPEG redecode
+          drawVolumeBar(g_radio_volume);
         }
       }
+
+      if (autoStart) break;  // alarm mode: exit entirely, no station list
     }
 
     delete audio; // destructor calls i2s_driver_uninstall(I2S_TX_PORT)
@@ -227,4 +241,6 @@ void runRadioMenu(bool autoStart)
       MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
   if (!record_buffer)
     Serial.println("ERROR: Failed to re-allocate record buffer after Web Radio");
+
+  return snooze;
 }

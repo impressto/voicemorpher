@@ -3,45 +3,61 @@
 void setupTimeSync()
 {
   if (!g_wifi_connected) return;
-  configTime(TZ_OFFSET_SEC, 0, NTP_SERVER1, NTP_SERVER2);
+  configTime(g_tz_offset * 3600L, 0, NTP_SERVER1, NTP_SERVER2);
 }
 
-static int s_lastFiredMinuteOfDay = -1;
+static int           s_lastFiredMinuteOfDay = -1;
+static unsigned long s_snoozeUntilMs        = 0;
 
-// Returns true if the alarm fired and the radio was launched.
+static bool fireAlarm()
+{
+  if (!isWiFiConnected()) {
+    Serial.println("Alarm fired but WiFi unavailable, skipping");
+    return false;
+  }
+  Serial.println("Alarm fired - starting Web Radio");
+  bool snoozed = runRadioMenu(true);
+  if (snoozed) {
+    s_snoozeUntilMs = millis() + 5UL * 60UL * 1000UL;
+    Serial.println("Snooze activated - 5 minutes");
+    drawStatus("Snooze", "5 minutes...");
+    delay(1500);
+  } else {
+    s_snoozeUntilMs = 0;
+  }
+  drawMenu();
+  return true;
+}
+
 bool checkAlarmClock()
 {
+  // Snooze timer (independent of alarm minute-of-day guard)
+  if (s_snoozeUntilMs > 0 && millis() >= s_snoozeUntilMs) {
+    s_snoozeUntilMs = 0;
+    return fireAlarm();
+  }
+
   if (!g_alarm_enabled || !isWiFiConnected()) return false;
 
   struct tm ti;
-  if (!getLocalTime(&ti, 0)) return false;       // non-blocking; false if not synced yet
-  if (ti.tm_year < (2020 - 1900)) return false;  // sanity: NTP hasn't synced yet
+  if (!getLocalTime(&ti, 0)) return false;
+  if (ti.tm_year < (2020 - 1900)) return false;
 
   int nowMin   = ti.tm_hour * 60 + ti.tm_min;
   int alarmMin = g_alarm_hour * 60 + g_alarm_min;
 
-  // Fire if within 1 minute past the alarm (handles loop() being blocked in a
-  // submenu when the exact minute hit). Guard by alarmMin so it fires once/day.
   int minsPast = (nowMin - alarmMin + 1440) % 1440;
   if (minsPast <= 1 && s_lastFiredMinuteOfDay != alarmMin)
   {
     s_lastFiredMinuteOfDay = alarmMin;
-    if (!isWiFiConnected())
-    {
-      Serial.println("Alarm fired but WiFi unavailable, skipping");
-      return false;
-    }
-    Serial.println("Alarm fired - starting Web Radio");
-    runRadioMenu(true);
-    drawMenu();
-    return true;
+    return fireAlarm();
   }
   return false;
 }
 
 // ===== Alarm Clock settings screen =====
 
-static const int     ALARM_ROW_COUNT = 3;
+static const int     ALARM_ROW_COUNT = 4;
 static const int16_t ALARM_ROWS_Y    = 70;
 
 static void drawNowLine()
@@ -72,7 +88,8 @@ static void drawAlarmRow(int i, int sel)
   {
     case 0: snprintf(label, sizeof(label), "Hour: %02d", g_alarm_hour); break;
     case 1: snprintf(label, sizeof(label), "Minute: %02d", g_alarm_min); break;
-    default: snprintf(label, sizeof(label), "Alarm: %s", g_alarm_enabled ? "ON" : "OFF"); break;
+    case 2: snprintf(label, sizeof(label), "Alarm: %s", g_alarm_enabled ? "ON" : "OFF"); break;
+    case 3: snprintf(label, sizeof(label), "TZ: UTC%+d", g_tz_offset); break;
   }
 
   tft.setTextSize(2);
@@ -142,9 +159,16 @@ void runAlarmClockMenu()
             g_alarm_min = (g_alarm_min + (x > 0 ? 1 : -1) + 60) % 60;
             g_prefs.putInt("alarm_min", g_alarm_min);
             break;
-          default:
+          case 2:
             g_alarm_enabled = !g_alarm_enabled;
             g_prefs.putBool("alarm_en", g_alarm_enabled);
+            break;
+          case 3:
+            g_tz_offset += (x > 0 ? 1 : -1);
+            if (g_tz_offset < -12) g_tz_offset = -12;
+            if (g_tz_offset > 14)  g_tz_offset = 14;
+            g_prefs.putInt("tz_offset", g_tz_offset);
+            setupTimeSync();
             break;
         }
         drawAlarmRow(sel, sel);
@@ -199,7 +223,7 @@ void runClockScreensaver()
         char timeBuf[6];
         snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", ti.tm_hour, ti.tm_min);
         tft.setTextSize(7);
-        tft.setTextColor(TFT_WHITE);
+        tft.setTextColor(TFT_RED);
         tft.setCursor((TFT_W - 210) / 2, 72);
         tft.print(timeBuf);
 
@@ -208,7 +232,7 @@ void runClockScreensaver()
         snprintf(dateBuf, sizeof(dateBuf), "%s %s %d",
                  DAYS[ti.tm_wday], MONTHS[ti.tm_mon], ti.tm_mday);
         tft.setTextSize(2);
-        tft.setTextColor(COL_GRAY);
+        tft.setTextColor(tft.color565(120, 30, 30));  // dim red, no blue
         tft.setCursor((TFT_W - (int)strlen(dateBuf) * 12) / 2, 148);
         tft.print(dateBuf);
 
@@ -218,7 +242,7 @@ void runClockScreensaver()
           char alarmBuf[20];
           snprintf(alarmBuf, sizeof(alarmBuf), "Alarm: %02d:%02d", g_alarm_hour, g_alarm_min);
           tft.setTextSize(2);
-          tft.setTextColor(TFT_CYAN);
+          tft.setTextColor(tft.color565(180, 60, 60));  // warm red, no blue
           tft.setCursor((TFT_W - (int)strlen(alarmBuf) * 12) / 2, 208);
           tft.print(alarmBuf);
         }

@@ -81,6 +81,7 @@ char     g_wifi_pass[64]  = "";
 int      g_alarm_hour    = 7;
 int      g_alarm_min     = 0;
 bool     g_alarm_enabled = false;
+int      g_tz_offset     = TZ_OFFSET_SEC / 3600;
 
 const char *menuLabels[] = {
   // Root menu items
@@ -508,7 +509,11 @@ void setup()
   g_alarm_hour    = g_prefs.getInt("alarm_hr", 7);
   g_alarm_min     = g_prefs.getInt("alarm_min", 0);
   g_alarm_enabled = g_prefs.getBool("alarm_en", false);
-  Serial.printf("✓ Alarm prefs loaded: %02d:%02d %s\n", g_alarm_hour, g_alarm_min, g_alarm_enabled ? "ON" : "OFF");
+  g_tz_offset     = g_prefs.getInt("tz_offset", TZ_OFFSET_SEC / 3600);
+  if (g_tz_offset < -12) g_tz_offset = -12;
+  if (g_tz_offset > 14)  g_tz_offset = 14;
+  Serial.printf("✓ Alarm prefs loaded: %02d:%02d %s, TZ=UTC%+d\n",
+                g_alarm_hour, g_alarm_min, g_alarm_enabled ? "ON" : "OFF", g_tz_offset);
 
   LittleFS.begin(true);
   if (loadRecordingAuto())

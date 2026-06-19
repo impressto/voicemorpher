@@ -193,6 +193,7 @@ extern char     g_wifi_pass[64];   // 63 chars + NUL (WPA2-PSK max)
 extern int      g_alarm_hour;      // 0-23
 extern int      g_alarm_min;       // 0-59
 extern bool     g_alarm_enabled;
+extern int      g_tz_offset;       // hours from UTC (e.g. -5 = EST, -4 = EDT)
 
 // ── Const array externs ───────────────────────────────────────────────────────
 extern const char *menuLabels[];
@@ -294,7 +295,7 @@ bool isWiFiConnected();
 String getWiFiIP();
 
 // radio.cpp
-void runRadioMenu(bool autoStart = false);
+bool runRadioMenu(bool autoStart = false);
 
 // keyboard.cpp
 bool showTextKeyboard(const char *title, char *buf, size_t bufLen, bool isPassword);
