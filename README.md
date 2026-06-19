@@ -310,6 +310,35 @@ Your audio is chopped into short chunks and each chunk is repeated several times
 
 ---
 
+## 3D Printed Steampunk Radio Case
+
+The `3d/` folder contains `steam-radio-box.zip` — a set of 14 STL files you can 3D print to build a steampunk-style radio enclosure for the project. The case is designed to hold the ESP32-S3 board, TFT display, speaker, and joystick in a finished, self-contained unit.
+
+### Parts in the ZIP
+
+| STL File | Description |
+|----------|-------------|
+| `box-front.stl` | Front panel with display and joystick cutouts |
+| `box-back.stl` | Rear panel |
+| `box-speakerside.stl` | Side panel with speaker grille |
+| `box-powerside.stl` | Side panel with USB power access |
+| `lid-top.stl` | Top lid piece |
+| `lid-sides.stl` | Lid side trim |
+| `monitor-frame.stl` | Bezel frame for the TFT display |
+| `speakerframe.stl` | Internal speaker mounting frame |
+| `esp32-holder.stl` | Internal mount for the ESP32-S3 board |
+| `base.stl` | Internal base plate |
+| `shim1.stl` – `shim4.stl` | Spacer shims for fit adjustment |
+
+### Printing Tips
+
+- **Material:** PLA works well; use a wood-fill or bronze-fill PLA filament for a more authentic steampunk look
+- **Layer height:** 0.2 mm for a good balance of speed and detail
+- **Supports:** The box panels and lid print best with supports enabled for overhangs
+- **Post-processing:** Sand, prime, and dry-brush with metallic acrylic paint (copper, brass, or bronze) for a weathered metal finish
+
+---
+
 ## Going Further
 
 Once you're comfortable with this project, here are some ideas to explore:
