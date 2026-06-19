@@ -314,7 +314,7 @@ Your audio is chopped into short chunks and each chunk is repeated several times
 
 The `3d/` folder contains `steam-radio-box.zip` — a set of 14 STL files you can 3D print to build a steampunk-style radio enclosure for the project. The case is designed to hold the ESP32-S3 board, TFT display, speaker, and joystick in a finished, self-contained unit.
 
-![Uploading steampunk-alarm-clock.jpg…]()
+<img width="1200" height="796" alt="steampunk-alarm-clock" src="https://github.com/user-attachments/assets/e72f18be-08a1-4cce-b5f4-7ae2c9c0fd7b" />
 
 
 ### Parts in the ZIP
