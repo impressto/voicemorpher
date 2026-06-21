@@ -105,6 +105,7 @@ const uint8_t ITEM_RGB[][3] = {
     { 40, 200, 180},  // MENU_LONG_PLAY      — teal
     {220,  80, 180},  // MENU_MOOD           — pink
     {  0, 200, 255},  // MENU_RADIO          — cyan
+    {255, 160,  40},  // MENU_ALARM          — warm orange
     {140, 140, 160},  // MENU_SETTINGS       — silver
     // Settings sub-menu items
     {220, 160,  40},  // MENU_VOLUME         — gold
@@ -148,8 +149,8 @@ void drawMenu()
       iconColor = tc;
     }
     tft.drawFastHLine(0, y + ITEM_H - 1, TFT_W, tft.color565(r/8, g/8, b/8));
-    tft.drawBitmap(6, y + 5, MENU_ICONS[i], 16, 16, iconColor);
-    tft.setCursor(28, y + 5);
+    tft.drawBitmap(6, y + 2, MENU_ICONS[i], 16, 16, iconColor);
+    tft.setCursor(28, y + 2);
     tft.print(menuLabels[i]);
   }
 }

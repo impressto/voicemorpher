@@ -45,12 +45,10 @@ void audio_showstreamtitle(const char *info)
 
 // ===== Web Radio menu =====
 
-// Station list plus a trailing synthetic "Alarm Clock" entry (index
-// STATION_COUNT) that opens runAlarmClockMenu() instead of playing a stream.
 static int showStationList(int &sel)
 {
-  static const char    *labels[STATION_COUNT + 1];
-  static const uint8_t *icons[STATION_COUNT + 1];
+  static const char    *labels[STATION_COUNT];
+  static const uint8_t *icons[STATION_COUNT];
   static bool initDone = false;
   if (!initDone)
   {
@@ -59,11 +57,9 @@ static int showStationList(int &sel)
       labels[i] = STATION_NAMES[i];
       icons[i]  = ICON_RADIO;
     }
-    labels[STATION_COUNT] = "Alarm Clock";
-    icons[STATION_COUNT]  = ICON_ALARM;
     initDone = true;
   }
-  return showIconList(labels, icons, (int)STATION_COUNT + 1, sel);
+  return showIconList(labels, icons, (int)STATION_COUNT, sel);
 }
 
 static void drawVolumeBar(int volume)
@@ -100,9 +96,9 @@ static void drawNowPlayingScreen(int volume, bool alarmMode = false)
 
   drawVolumeBar(volume);
   if (alarmMode)
-    drawHints("X: vol  Y: snooze 5min", "Btn: dismiss alarm");
+    drawHints("Wave<10cm:snooze Hold<5cm:off", "Btn/Y: snooze  Btn long: off");
   else
-    drawHints("X: volume", "Hold button: station list");
+    drawHints("X: volume", "Dbl-click/hold: stations");
 }
 
 bool runRadioMenu(bool autoStart)
@@ -149,11 +145,6 @@ bool runRadioMenu(bool autoStart)
         break;
       }
 
-      if (chosen == (int)STATION_COUNT) {  // "Alarm Clock" entry
-        runAlarmClockMenu();
-        continue;
-      }
-
       sel = chosen;
       g_radio_station = sel;
       g_prefs.putInt("rd_station", g_radio_station);
@@ -167,6 +158,11 @@ bool runRadioMenu(bool autoStart)
       char lastTitle[sizeof(g_streamTitle)] = "";
       int  lastVol = g_radio_volume;
       unsigned long lastMoveMs = 0;
+      unsigned long sonarCloseStartMs = 0;
+      unsigned long lastSonarMs = 0;
+      unsigned long lastPresenceMs = millis();
+      bool presencePaused = false;
+      unsigned long lastBtnTapMs = 0;
       while (isJoystickButtonPressed()) delay(10);
 
       while (true)
@@ -185,6 +181,41 @@ bool runRadioMenu(bool autoStart)
           lastMoveMs = now;
         }
 
+        // Sonar gestures — throttled to avoid starving audio->loop()
+        if (now - lastSonarMs >= 500) {
+          lastSonarMs = now;
+          float sonarCm = readHCSR04cm();
+          if (autoStart) {
+            // Alarm mode: wave <10cm = snooze, hold <5cm 5s = dismiss
+            if (sonarCm > 0.0f) {
+              if (sonarCm < 5.0f) {
+                if (sonarCloseStartMs == 0) sonarCloseStartMs = now;
+                if (now - sonarCloseStartMs >= 5000) break; // dismiss
+              } else if (sonarCm < 10.0f) {
+                snooze = true;
+                break;
+              } else {
+                sonarCloseStartMs = 0;
+              }
+            }
+          }
+#if RADIO_PRESENCE_TIMEOUT_MS
+          else if (sonarCm > 0.0f && sonarCm < PRESENCE_MAX_CM) {
+            lastPresenceMs = now;
+            if (presencePaused) {
+              presencePaused = false;
+              audio->setVolume((uint8_t)g_radio_volume);
+              drawNowPlayingScreen(g_radio_volume, autoStart);
+            }
+          } else if (!presencePaused
+                     && now - lastPresenceMs >= RADIO_PRESENCE_TIMEOUT_MS) {
+            presencePaused = true;
+            audio->setVolume(0);
+            drawStatus("Paused", "No one nearby");
+          }
+#endif
+        }
+
         // Alarm mode: joystick Y = snooze
         if (autoStart && readJoystickAxis(JOY_Y_PIN) != 0) {
           snooze = true;
@@ -194,8 +225,11 @@ bool runRadioMenu(bool autoStart)
         if (isJoystickButtonPressed()) {
           unsigned long pressStart = millis();
           while (isJoystickButtonPressed()) delay(10);
+          unsigned long pressDur = millis() - pressStart;
           if (autoStart) break;  // any click = dismiss alarm
-          if (millis() - pressStart >= 500) break;  // long press = station list
+          if (pressDur >= 500) break;  // long press = station list
+          if (now - lastBtnTapMs <= DOUBLE_CLICK_MS) break; // double click = station list
+          lastBtnTapMs = now;
         }
 
         if (strcmp(g_streamTitle, lastTitle) != 0) {

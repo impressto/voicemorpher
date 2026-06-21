@@ -62,6 +62,19 @@
 #define TH_SONAR_MAX_CM 30.0f
 #endif
 
+// Presence-aware playback: auto-pause radio after this many ms with no one
+// detected by the sonar sensor; resume when someone approaches.
+// Set to 0 to disable.
+#ifndef RADIO_PRESENCE_TIMEOUT_MS
+#define RADIO_PRESENCE_TIMEOUT_MS (5UL * 60UL * 1000UL) // 5 minutes
+#endif
+// Max sonar range (cm) for presence detection. HC-SR04 is reliable up to
+// ~200cm; beyond that readings get noisy. Separate from TH_SONAR_MAX_CM
+// which is tuned for theremin pitch control.
+#ifndef PRESENCE_MAX_CM
+#define PRESENCE_MAX_CM 150.0f
+#endif
+
 // Web Radio: ESP32-audioI2S volume range (0-21) and default level.
 #ifndef RADIO_VOLUME_MIN
 #define RADIO_VOLUME_MIN 0

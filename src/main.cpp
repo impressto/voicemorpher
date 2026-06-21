@@ -94,6 +94,7 @@ const char *menuLabels[] = {
   "Stored Play",
   "Mood Music",
   "Web Radio",
+  "Alarm Clock",
   "Settings",
   // Settings sub-menu items
   "Volume",

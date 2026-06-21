@@ -1411,7 +1411,7 @@ void runMenuAction(int item)
   if (!g_has_recording && !isSettingsItem && item != MENU_RECORD && item != MENU_PASSTHROUGH
       && item != MENU_LONG_REC && item != MENU_LONG_PLAY
       && item != MENU_MOOD && item != MENU_THEREMIN && item != MENU_RADIO
-      && item != MENU_MATHSYNTH && item != MENU_SETTINGS)
+      && item != MENU_ALARM && item != MENU_MATHSYNTH && item != MENU_SETTINGS)
   {
     drawStatus("No recording!", "Record first");
     delay(1500);
@@ -1865,6 +1865,10 @@ void runMenuAction(int item)
       break;
     case MENU_RADIO:
       runRadioMenu();
+      drawMenu();
+      break;
+    case MENU_ALARM:
+      runAlarmClockMenu();
       drawMenu();
       break;
     default:

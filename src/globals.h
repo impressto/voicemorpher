@@ -26,7 +26,7 @@ using namespace fs;
 // ST7789V TFT display
 #define TFT_W    320
 #define TFT_H    240
-#define ITEM_H    24
+#define ITEM_H    21
 #define COL_GRAY 0x7BEF
 
 // Waveform display geometry
@@ -91,6 +91,7 @@ enum MenuItem
   MENU_LONG_PLAY,
   MENU_MOOD,
   MENU_RADIO,
+  MENU_ALARM,
   MENU_SETTINGS,
   MENU_ROOT_COUNT,
 
